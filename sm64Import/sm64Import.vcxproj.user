@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <LocalDebuggerCommandArguments>-r "C:/Users/David/Desktop/sm64IMPORTTEST.z64" -a $18F0000 $0E000000 -c 0x150000 -s 500 -io "Test_Area1.obj" "Warp_Area2:0x1C" -io "Test_Area2.obj" "Warp_Area1:0x1B,Warp_Area3:0x1D,FireRock:0x01,FireRock_Orange:0x01" -io "Test_Area3.obj" "Warp_Area2:0x1C,Warp_Area4:0x1E" -io "Test_Area4.obj" "Warp_Area3:0x1D"</LocalDebuggerCommandArguments>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <LocalDebuggerCommandArguments>sm64Import.exe -r "sm64IMPORTTEST.z64" -a 0x18F0000 0x0E000000 -c 0x150000 -s 500 -io "Test_Area1.obj" "Warp_Area2:0x1C" -io "Test_Area2.obj" "Warp_Area1:0x1B,Warp_Area3:0x1D,FireRock:0x01,FireRock_Orange:0x01" -io "Test_Area3.obj" "Warp_Area2:0x1C,Warp_Area4:0x1E" -io "Test_Area4.obj" "Warp_Area3:0x1D"</LocalDebuggerCommandArguments>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+  </PropertyGroup>
+</Project>
