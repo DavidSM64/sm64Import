@@ -25,7 +25,7 @@ Note: You don't have to define every material with COL_DATA, the default value i
 [-sv LIGHT_VALUE DARK_VALUE] Shading value for levels. Used with -io.<br />
 [-sgm DATA] Sets the geometry mode for the following -io cmd.<br />
 -sgm "MaterialName:0x00040000"<br />
-[-put OBJ_NAME SEG_DATA ROM_ADDRESS]<br />
+[-put OBJ_NAME SEG_DATA ROM_ADDRESS]<br /> Puts the segmented pointer of SEG_Data into the ROM. Useful for updating pointers in your levelscript automatically.
 SEG_DATA can be (Names are not case-sensative): START, SOLID, ALPHA, TRANS, GEO, or COL<br />
 [-vft BOOLEAN] Flip all textures vertically if true. Used with -io.<br />
 
