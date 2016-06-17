@@ -3,10 +3,10 @@
 sm64Import v0.0 (Work-in-progress, about 90% done)
 
 Current Commands:
-[-a ROM_ADDRESS {SEG_POINTER}] Set the base ROM address (and optional segmented pointer) to import to. The segmented pointer is required for -io
-[-c SIZE] Sets the max data cap. If the following data is larger than this, then the program will return an error.
+[-a ROM_ADDRESS {SEG_POINTER}] Set the base ROM address (and optional segmented pointer) to import to. The segmented pointer is required for -io<br />
+[-c SIZE] Sets the max data cap. If the following data is larger than this, then the program will return an error.<br />
 [-ct DATA] Allows you to add colors textures. Useful for crystals.
--ct "MaterialName:0xFF0000FF"
+-ct "MaterialName:0xFF0000FF"<br />
 [-ib BIN_PATH {OFFSET SIZE}] Import binary file into the ROM. Optional parameters for importing only a specific section of the file into the ROM.
 [-ig OBJ_NAME GEO_TYPE] Creates a geo layout from data from a previous -io cmd. GEOTYPE = 0 for objects & GEOTYPE = 1 for levels.
 [-center BOOLEAN] Centers the current model/collision if true. Used with -io & -ioc.
