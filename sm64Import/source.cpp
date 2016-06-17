@@ -1,7 +1,7 @@
 /*
 sm64Import v0.0 by Davideesk
 
-TODO list for next version:
+TODO list:
 * Support other texture types besides RGBA16
 * Support other image types other than just .png
 */
