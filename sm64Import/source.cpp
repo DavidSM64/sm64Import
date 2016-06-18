@@ -26,10 +26,6 @@ typedef signed short s16;
 typedef unsigned int u32;
 typedef signed int s32;
 
-#define SGM_CULL_FRONT 0x1000;
-#define SGM_CULL_BACK 0x2000;
-#define SGM_CULL_BOTH 0x3000;
-
 enum MaterialType
 {
 	NOT_DEFINED,
@@ -39,6 +35,17 @@ enum MaterialType
 	COLOR_SOLID,
 	COLOR_TRANSPARENT
 }; 
+
+enum TextureType
+{
+	TEX_RGBA16,
+	TEX_RGBA32,
+	TEX_IA4,
+	TEX_IA8,
+	TEX_IA16,
+	TEX_I4,
+	TEX_I8
+};
 
 /* Names taken straight from skelux's importer */
 enum FogType
@@ -92,6 +99,7 @@ typedef struct {
 	u32 texWidth;
 	u32 texHeight;
 	MaterialType type;
+	TextureType texType;
 	u16 collision;
 	bool enableGeoMode;
 	u32 geoMode;
@@ -127,7 +135,7 @@ typedef struct {
 	u32 offset;
 	u32 width;
 	u32 height;
-	vector<u16> data;
+	vector<u8> data;
 } textureEntry;
 
 typedef struct {
@@ -197,7 +205,7 @@ bool createAlphaDL = false;
 bool createTransDL = false;
 bool definedSegPtr = false;
 MaterialType lastTextureType = NOT_DEFINED;
-string geoModeData = "", colorTexData = "";
+string geoModeData = "", colorTexData = "", texTypeData = "";
 
 /* Tool Variables */
 string romPath;
@@ -346,6 +354,25 @@ void checkGeoModeInfo(material& m) {
 	}
 }
 
+void checkTextureTypeInfo(material& m) {
+	m.geoMode = 0;
+	vector<string> gma = splitString(texTypeData, ",");
+	for (string gme : gma) {
+		vector<string> gmd = splitString(gme, ":");
+		printf("Comparing %s vs %s\n", m.name.c_str(), gmd[0].c_str());
+		if (m.name.compare(gmd[0]) == 0) {
+			gmd[1] = tolowercase(gmd[1]);
+			printf("Set Texture type for '%s', value = %s\n", m.name.c_str(), gmd[1].c_str());
+			if (gmd[1].compare("rgba16") == 0) 
+				m.texType = TEX_RGBA16;
+			else if (gmd[1].compare("rgba32") == 0)
+				m.texType = TEX_RGBA32;
+			return;
+		}
+	}
+	m.texType = TEX_RGBA16;
+}
+
 void checkColorTexInfo(material& m) {
 	m.color = 0;
 	m.texColOffset = 0;
@@ -370,7 +397,7 @@ void checkColorTexInfo(material& m) {
 	}
 }
 
-bool checkForTextureCopy(material * mat, vector<u16>& cur) {
+bool checkForTextureCopy(material * mat, vector<u8>& cur) {
 	if (textureBank.size() == 0) return false;
 	for (textureEntry& entry : textureBank) {
 		if (entry.data.size() != cur.size()) continue;
@@ -383,7 +410,6 @@ bool checkForTextureCopy(material * mat, vector<u16>& cur) {
 			pass = true;
 		}
 		if (pass) {
-			//printf("Duplicate Texture found!\n");
 			mat->offset = entry.offset;
 			mat->texWidth = entry.width;
 			mat->texHeight = entry.height;
@@ -396,7 +422,7 @@ bool checkForTextureCopy(material * mat, vector<u16>& cur) {
 	return false;
 }
 
-int processRGBAImage(const char* filename, material * mat) {
+int processRGBA16Image(const char* filename, material * mat) {
 	vector<u8> data;
 	u32 width, height;
 
@@ -408,7 +434,7 @@ int processRGBAImage(const char* filename, material * mat) {
 	//printf("Texture '%s': w=%d, h=%d\n",filename,width,height);
 	mat->texWidth = width;
 	mat->texHeight = height;
-	vector<u16> tex = vector<u16>(data.size() / 4);
+	vector<u8> tex = vector<u8>(data.size() / 2);
 
 	mat->type = TEXTURE_SOLID;
 
@@ -435,10 +461,13 @@ int processRGBAImage(const char* filename, material * mat) {
 				}
 			}
 
+			int pos = (y*width + x) * 2;
 			if (flipTexturesVertically)
-				tex[(height - 1 - y)*width + x] = _byteswap_ushort((r << 11) | (g << 6) | (b << 1) | a);
-			else
-				tex[y*width + x] = _byteswap_ushort((r << 11) | (g << 6) | (b << 1) | a);
+				pos = ((height - 1 - y)*width + x) * 2;
+
+			u16 texel = (r << 11) | (g << 6) | (b << 1) | a;
+			tex[pos] = (texel >> 8) & 0xFF;
+			tex[pos + 1] = texel & 0xFF;
 		}
 	}
 
@@ -450,11 +479,69 @@ int processRGBAImage(const char* filename, material * mat) {
 		entry.height = height;
 		entry.id = textureBank.size();
 		textureBank.push_back(entry);
+		mat->texture = textureBank.size() - 1;
 	}
 
-	mat->texture = textureBank.size()-1;
 	mat->hasTexture = true;
 	return data.size() / 2;
+}
+
+int processRGBA32Image(const char* filename, material * mat) {
+	vector<u8> data;
+	u32 width, height;
+
+	u32 error = decode(data, width, height, filename);
+	if (error) {
+		cout << "decoder error " << error << ": " << lodepng_error_text(error) << endl;
+		return 0;
+	}
+	mat->texWidth = width;
+	mat->texHeight = height;
+	vector<u8> tex = vector<u8>(data.size());
+	printf("RGBA32 Texture '%s': w=%d, h=%d, size = 0x%X\n",filename,width,height, data.size());
+
+	mat->type = TEXTURE_SOLID;
+
+	for (int y = 0; y < height; ++y)
+	{
+		for (int x = 0; x < width; ++x)
+		{
+			u8 r = data[(y*width + x) * 4 + 0];
+			u8 g = data[(y*width + x) * 4 + 1];
+			u8 b = data[(y*width + x) * 4 + 2];
+			u8 a = data[(y*width + x) * 4 + 3]; // 8 bit alpha
+
+			if (a < 0xFF || mat->opacity < 0xFF) {
+				if (mat->opacity == 0xFF) mat->opacity *= a;
+				mat->type = TEXTURE_TRANSPARENT;
+				mat->hasTransparency = true;
+				createTransDL = true;
+			}
+
+			int pos = (y*width + x) * 4;
+			if (flipTexturesVertically)
+				pos = ((height - 1 - y)*width + x) * 4;
+
+			tex[pos] = r;
+			tex[pos + 1] = g;
+			tex[pos + 2] = b;
+			tex[pos + 3] = a;
+		}
+	}
+
+	if (!checkForTextureCopy(mat, tex)) {
+		textureEntry entry;
+		entry.offset = lastOffset;
+		entry.data = tex;
+		entry.width = width;
+		entry.height = height;
+		entry.id = textureBank.size();
+		textureBank.push_back(entry);
+		mat->texture = textureBank.size() - 1;
+	}
+
+	mat->hasTexture = true;
+	return tex.size();
 }
 
 void processMaterialColor(string str, material * mat) {
@@ -520,7 +607,16 @@ void processMaterialLib(string str) {
 		}
 		else if (line.find("map_Kd ") == 0) {
 			//cout << "Found image: " << line << endl;
-			size = processRGBAImage(line.substr(7).c_str(), &materials.at(materials.size()-1));
+			printf("Texture Type: 0x%X\n", size);
+			checkTextureTypeInfo(materials.at(materials.size() - 1));
+			switch (materials.at(materials.size() - 1).texType) {
+				case TEX_RGBA16:
+					size = processRGBA16Image(line.substr(7).c_str(), &materials.at(materials.size() - 1));
+					break;
+				case TEX_RGBA32:
+					size = processRGBA32Image(line.substr(7).c_str(), &materials.at(materials.size() - 1));
+					break;
+			}
 		}
 	}
 	if (!materials.at(materials.size() - 1).isTextureCopy) {
@@ -843,11 +939,55 @@ void addCmdF2(vector<f3d>& cmds, material& mat) {
 	cmds.push_back(strF3D(cmd));
 }
 
+u16 getTChange(material mat) {
+	u16 val = 0;
+	switch (mat.texWidth) {
+		case 1024:
+			val = 0x08;
+			break;
+		case 512:
+			val = 0x10;
+			break;
+		case 256:
+			val = 0x20;
+			break;
+		case 128:
+			val = 0x40;
+			break;
+		case 64:
+			val = 0x80;
+			break;
+		case 32:
+			val = 0x100;
+			break;
+		case 16:
+			val = 0x200;
+			break;
+		case 8:
+			val = 0x400;
+			break;
+		default:
+			val = 0x800;
+	}
+	if (mat.texType == TEX_RGBA32) val /= 2;
+	return val;
+}
+
 /*
-F3 00 00 00 07 7F F1 00 for 32x64 or 64x32 RGBA Textures
+F3 00 00 00 07 7F F0 80 for 32x64 or 64x32 RGBA Textures
 F3 00 00 00 07 3F F1 00 for 32x32 RGBA Textures
 */
 void addCmdF3(vector<f3d>& cmds, material& mat) {
+
+	u32 numTexels = ((mat.texWidth * mat.texHeight) - 1) & 0xFFF;
+	int tl = getTChange(mat);
+
+	u32 lower = ((numTexels << 12) | tl & 0xFFF) & 0x00FFFFFF;
+
+	char cmd[24];
+	sprintf(cmd, "F3 00 00 00 07 %X %X %X", (lower >> 16) & 0xFF, (lower >> 8) & 0xFF, lower & 0xFF);
+	cmds.push_back(strF3D(cmd));
+	/*
 	if (mat.hasTexture) {
 		if (mat.texWidth == 32 && mat.texHeight == 32) 
 			cmds.push_back(strF3D("F3 00 00 00 07 3F F1 00"));
@@ -856,6 +996,17 @@ void addCmdF3(vector<f3d>& cmds, material& mat) {
 				cmds.push_back(strF3D("F3 00 00 00 07 7F F0 80"));
 			else
 				cmds.push_back(strF3D("F3 00 00 00 07 7F F1 00"));
+	}
+	*/
+}
+
+
+u8 getTypeFromMaterial(material& mat) {
+	switch (mat.texType) {
+		case TEX_RGBA32:
+			return 0x18;
+		default:
+			return 0x10; // RGBA16
 	}
 }
 
@@ -866,19 +1017,37 @@ F5 10 10 00 00 01 80 50 : Standard usage for 32x64 textures after G_SETTILESIZE
 F5 10 20 00 00 01 40 60 : Standard usage for 64x32 textures after G_SETTILESIZE
 */
 void addCmdF5(vector<f3d>& cmds, material& mat, bool first) {
-	int lineSize = mat.texWidth / 2;
+	
+
+	/*
+	if (mat.texWidth == 32 && mat.texHeight == 32) 
+		cmds.push_back(strF3D("F5 10 10 00 00 01 40 50"));
+	else 
+		if(mat.texHeight == 64)
+			cmds.push_back(strF3D("F5 10 10 00 00 01 80 50"));
+		else
+			cmds.push_back(strF3D("F5 10 20 00 00 01 40 60"));
+	*/
+
+	u8 type = getTypeFromMaterial(mat);
+	char cmd[24];
 	if (first) {
-		if(mat.type == TEXTURE_SOLID || mat.type == TEXTURE_ALPHA || mat.type == TEXTURE_TRANSPARENT)
-			cmds.push_back(strF3D("F5 10 00 00 07 00 00 00"));
+		if (mat.hasTexture) {
+			sprintf(cmd, "F5 %X 00 00 07 00 00 00", type);
+			cmds.push_back(strF3D(cmd));
+		}
 	} else {
-		if (mat.type == TEXTURE_SOLID || mat.type == TEXTURE_ALPHA || mat.type == TEXTURE_TRANSPARENT) {
-			if (mat.texWidth == 32 && mat.texHeight == 32) 
-				cmds.push_back(strF3D("F5 10 10 00 00 01 40 50"));
-			else 
-				if(mat.texHeight == 64)
-					cmds.push_back(strF3D("F5 10 10 00 00 01 80 50"));
-				else
-					cmds.push_back(strF3D("F5 10 20 00 00 01 40 60"));
+		if (mat.hasTexture) {
+			u16 line = (mat.texWidth / 2) & 0x1FF;
+			u32 upper = ((type << 16) | (line << 8)) & 0x00FFFFFF;
+			u8 maskS = (u8)log2(mat.texWidth) & 0xF;
+			u8 maskT = (u8)log2(mat.texHeight) & 0xF;
+			u32 lower = ((maskT << 14) | (maskS << 4)) & 0x00FFFFFF;
+			sprintf(cmd, "F5 %X %X %X 00 %X %X %X", 
+			(upper >> 16) & 0xFF, (upper >> 8) & 0xFF, upper & 0xFF,
+			(lower >> 16) & 0xFF, (lower >> 8) & 0xFF, lower & 0xFF);
+			//printf("F5 CMD: %s\n", cmd);
+			cmds.push_back(strF3D(cmd));
 		}
 	}
 }
@@ -894,7 +1063,9 @@ void addColorCmdFB(vector<f3d>& cmds, material& mat) {
 
 void addCmdFC(vector<f3d>& cmds, material& mat) {
 	if (mat.hasTexture) {
-		if (mat.hasTextureAlpha)
+		if(mat.texType == TEX_RGBA32)
+			cmds.push_back(strF3D("FC 11 96 23 FF 2F FF FF"));
+		else if (mat.hasTextureAlpha)
 			if(enableFog)
 				cmds.push_back(strF3D("FC FF FF FF FF FC F2 38"));
 			else
@@ -915,7 +1086,8 @@ void addCmdFD(vector<f3d>& cmds, material& mat) {
 	if (mat.hasTexture) {
 		u32 off = startSegOffset + mat.offset + 0x10;
 		char cmd[24];
-		sprintf(cmd, "FD 10 00 00 %X %X %X %X", curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
+		u8 type = getTypeFromMaterial(mat);
+		sprintf(cmd, "FD %X 00 00 %X %X %X %X", type, curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
 		cmds.push_back(strF3D(cmd));
 	}
 }
@@ -1916,6 +2088,9 @@ int main(int argc, char *argv[]) {
 		}
 		else if (cmd.compare("-ct") == 0 && arg.size() > 1) {
 			colorTexData = arg[1];
+		}
+		else if (cmd.compare("-tt") == 0 && arg.size() > 1) {
+			texTypeData = arg[1];
 		}
 		else if (cmd.compare("-vft") == 0 && arg.size() > 1) {
 			arg[1] = tolowercase(arg[1]);
