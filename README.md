@@ -1,10 +1,12 @@
 # sm64Import
 
-sm64Import v0.0 (Work-in-progress, about 90% done)
+sm64Import v0.0 (Work-in-progress)
 
-Uses two libraries:<br />
-lodepng - Used to decode .png files for RGBA16 textures<br />
-rapidXML - Used to parse .xml files for importing tweak files.<br />
+Libraries used:<br />
+lodepng.h - Used to decode .png files for textures<br />
+jpeg_decode.h - Used to decode .jpg files for textures<br />
+BMP.h - Used to decode 8, 24, 32 bpp .bmp files for textures<br />
+rapidXML.h - Used to parse .xml files for importing tweak files.<br />
 
 Current Commands:<br />
 [-a ROM_ADDRESS {SEG_POINTER}] Set the base ROM address (and optional segmented pointer) to import to. The segmented pointer is required for -io<br />
