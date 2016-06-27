@@ -1,12 +1,10 @@
 /*
 sm64Import v0.0 by Davideesk
-
-TODO list:
-* Support other image types other than just .png
-* Finish up water boxes. I need to stop procrastinating this.
 */
 
 #include "lodepng.h"
+#include "jpeg_decoder.h"
+#include "BMP.h"
 #include "rapidxml.hpp"
 #include <fstream>
 #include <iostream>
@@ -21,7 +19,7 @@ using namespace lodepng;
 using namespace rapidxml;
 
 #ifndef MAX
-#define MAX(a, b)				((a) > (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 #endif
 #define	G_TX_DXT_FRAC	11
 #define TXL2WORDS(txls, b_txl)	MAX(1, ((txls)*(b_txl)/8))
@@ -34,6 +32,7 @@ using namespace rapidxml;
 					TXL2WORDS_4b(width))
 
 typedef unsigned char u8;
+typedef signed char s8;
 typedef unsigned short u16;
 typedef signed short s16;
 typedef unsigned int u32;
@@ -103,7 +102,9 @@ typedef struct {
 	bool hasTransparency;
 	bool isTextureCopy;
 	bool enableTextureColor;
-	u32 color; // RGB
+	bool enableAlphaMask; // For I4/I8 textures.
+	bool cameFromBMP; // For I4/I8 textures.
+	u32 color;
 	u8 opacity;
 	u8 opacityOrg;
 	u32 offset;
@@ -126,8 +127,16 @@ typedef struct {
 } face;
 
 typedef struct {
+	s8 copyIndex;
 	u8 data[16];
 } finalVertex;
+
+typedef struct {
+	u8 numTri;
+	u8 size;
+	u8 indexList[15];
+	finalVertex fv[15];
+} fvGroup;
 
 typedef struct {
 	u8 data[8];
@@ -139,9 +148,17 @@ typedef struct {
 } geoCmd;
 
 typedef struct {
+	u8 len;
+	u8 data[0x100];
+} genData;
+
+typedef struct {
 	int position;
 	int cLen;
 	material * mat;
+	int numGroups;
+	int vertStart;
+	fvGroup * fvg;
 } materialPosition;
 
 typedef struct {
@@ -152,13 +169,22 @@ typedef struct {
 	vector<u8> data;
 } textureEntry;
 
+/*
+Types:
+0 = water
+1 = toxic mist
+2 = mist
+*/
 typedef struct {
+	u16 index;
 	u16 type;
-	s16 x1;
-	s16 z1;
-	s16 x2;
-	s16 z2;
+	u16 scale;
+	s16 minx;
+	s16 minz;
+	s16 maxx;
+	s16 maxz;
 	s16 y;
+	u32* pointer;
 } waterBox;
 
 typedef struct {
@@ -214,6 +240,7 @@ material* currentMaterial;
 int currentFace = 0;
 int lastPos = 0;
 int lastOffset = 0;
+int lastFVertPos = 0;
 bool createSolidDL = false;
 bool createAlphaDL = false;
 bool createTransDL = false;
@@ -238,9 +265,8 @@ bool enableFog = false;
 FogType fogType = FOG_VERY_INTENSE;
 u8 fogRed = 0xFF, fogGreen = 0xFF, fogBlue = 0xFF;
 u8 defaultColor[16] = { 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0x7F,0x7F,0x7F,0xFF,0x7F,0x7F,0x7F,0xFF };
-bool enableDeathFloor = true;
+bool enableDeathFloor = false;
 s16 dfx1 = 0x4000, dfz1 = 0x4000, dfx2 = 0xBFFF, dfz2 = 0xBFFF, dfy = -8000;
-bool enableWaterBoxes = false;
 vector<waterBox> waterBoxes;
 
 void importOBJCollision(const char*, const char*, bool);
@@ -392,7 +418,6 @@ void addPtr(char* name, PtrType type, u32 data) {
 						op.col_ptr = data;
 						break;
 				}
-				//printf("Adding a ptr: 0x%X\n", data);
 			}
 		}
 	}
@@ -422,7 +447,7 @@ void checkTextureTypeInfo(material& m) {
 	vector<string> gma = splitString(texTypeData, ",");
 	for (string gme : gma) {
 		vector<string> gmd = splitString(gme, ":");
-		printf("Comparing %s vs %s\n", m.name.c_str(), gmd[0].c_str());
+		//printf("Comparing %s vs %s\n", m.name.c_str(), gmd[0].c_str());
 		if (m.name.compare(gmd[0]) == 0) {
 			gmd[1] = tolowercase(gmd[1]);
 			printf("Set Texture type for '%s', value = %s\n", m.name.c_str(), gmd[1].c_str());
@@ -430,16 +455,28 @@ void checkTextureTypeInfo(material& m) {
 				m.texType = TEX_RGBA16;
 			else if (gmd[1].compare("rgba32") == 0)
 				m.texType = TEX_RGBA32;
-			else if (gmd[1].compare("ia4") == 0)
+			else if (gmd[1].compare("ia4") == 0) 
 				m.texType = TEX_IA4;
 			else if (gmd[1].compare("ia8") == 0)
 				m.texType = TEX_IA8;
 			else if (gmd[1].compare("ia16") == 0)
 				m.texType = TEX_IA16;
-			else if (gmd[1].compare("i4") == 0)
+			else if (gmd[1].compare("i4") == 0) {
 				m.texType = TEX_I4;
-			else if (gmd[1].compare("i8") == 0)
+				if (gmd.size() > 2) {
+					if (gmd[2].compare("a") == 0) {
+						m.enableAlphaMask = true;
+					}
+				}
+			}
+			else if (gmd[1].compare("i8") == 0) {
 				m.texType = TEX_I8;
+				if (gmd.size() > 2) {
+					if (gmd[2].compare("a") == 0) {
+						m.enableAlphaMask = true;
+					}
+				}
+			}
 			return;
 		}
 	}
@@ -453,18 +490,18 @@ void checkColorTexInfo(material& m) {
 	vector<string> gma = splitString(colorTexData, ",");
 	for (string gme : gma) {
 		vector<string> gmd = splitString(gme, ":");
-		if (m.name.compare(gmd[0]) == 0) {
+		if (m.name.compare(gmd[0].c_str()) == 0) {
 			if (gmd[1].find("0x") == 0)
 				m.color = stoll(gmd[1].substr(2).c_str(), 0, 16);
 			else if (gmd[1].find("$") == 0) {
 				m.color = stoll(gmd[1].substr(1).c_str(), 0, 16);
 			}
 			else
-				m.color = stoll(gmd[1]);
+				m.color = stoll(gmd[1].c_str());
 			m.enableTextureColor = true;
-			//printf("Set texture color for '%s', value = 0x%X\n", m.name.c_str(), m.color);
+			printf("Set texture color for '%s', value = 0x%X\n", m.name.c_str(), m.color);
 			if (gmd.size() > 2) 
-				m.texColDark = stof(gmd[2]);
+				m.texColDark = stof(gmd[2].c_str());
 			return;
 		}
 	}
@@ -496,16 +533,93 @@ bool checkForTextureCopy(material * mat, vector<u8>& cur) {
 	return false;
 }
 
+int decodeImage(vector<u8>& data, u32& width, u32& height, bool& noAlpha, bool& isBMP, string filename) {
+	if (filename.rfind('.') != string::npos) {
+		string ext = filename.substr(filename.rfind('.') + 1);
+		//printf("File extension = %s\n", ext.c_str());
+		ext = tolowercase(ext.c_str());
+
+		if(ext.compare("png") == 0) {
+			u32 error = decode(data, width, height, filename);
+			if (error) {
+				err.id = 502;
+				err.message = "lodepng error: ";
+				err.message.append(lodepng_error_text(error));
+				return 1;
+			}
+		}
+		else if (ext.compare("jpg") == 0 || ext.compare("jpeg") == 0 || ext.compare("jpe") == 0 || ext.compare("jfif") == 0) {
+			noAlpha = true;
+			FILE *f = fopen(filename.c_str(), "rb");
+			fseek(f, 0, SEEK_END);
+			int size = ftell(f); 
+			u8* buf = (u8*)malloc(size);
+			fseek(f, 0, SEEK_SET);
+			size_t read = fread(buf, 1, size, f);
+			fclose(f);
+			Jpeg::Decoder decoder(buf, size);
+			if (decoder.GetResult() != Jpeg::Decoder::OK)
+			{
+				err.id = 503;
+				err.message = "jpeg_decoder error";
+				return 1;
+			}
+			width = decoder.GetWidth();
+			height = decoder.GetHeight();
+			data.insert(data.end(), &decoder.GetImage()[0], &decoder.GetImage()[width*height*3]);
+			free(buf);
+		}
+		else if (ext.compare("bmp") == 0) {
+			BMP img = BMP(filename.c_str());
+			if (img.error) {
+				err.id = 504;
+				err.message = "bmp error: ";
+				err.message.append(img.errorMsg);
+			}
+			data = img.GetPixels();
+			width = img.GetWidth();
+			height = img.GetHeight();
+			if(img.GetBPP() == 24) noAlpha = true;
+			isBMP = true;
+		}
+		else {
+			err.id = 501;
+			err.message = "Could not find extension for image file: ";
+			err.message.append(filename.c_str());
+		}
+	}
+	else {
+		err.id = 500;
+		err.message = "Could not find extension for image file: ";
+		err.message.append(filename.c_str());
+	}
+
+	return 0;
+}
+
+void insertAlphaIntoRGB(vector<u8>& data) {
+	for (int i = 0; i < data.size(); i++) {
+		if (i % 4 == 3) {
+			data.insert(data.begin() + i, 0xFF);
+		}
+	}
+	data.push_back(0xFF);
+}
+
 int processRGBA16Image(const char* filename, material * mat) {
 	vector<u8> data;
 	u32 width, height;
+	
+	bool noAlpha = false;
+	decodeImage(data, width, height, noAlpha, mat->cameFromBMP, filename);
+	if (noAlpha) insertAlphaIntoRGB(data);
 
-	u32 error = decode(data, width, height, filename);
-	if (error) {
-		cout << "decoder error " << error << ": " << lodepng_error_text(error) << endl;
-		return 0;
-	}
-	//printf("Texture '%s': w=%d, h=%d\n",filename,width,height);
+
+	FILE* tst = fopen(string(filename).append(".imgbin").c_str(), "wb");
+	fwrite((u8*)&data[0], 1, width*height * 4, tst);
+	fclose(tst);
+
+	printf("Texture '%s': w=%d, h=%d, size = 0x%X\n",filename,width,height,data.size());
 	mat->texWidth = width;
 	mat->texHeight = height;
 	vector<u8> tex = vector<u8>(data.size() / 2);
@@ -535,8 +649,10 @@ int processRGBA16Image(const char* filename, material * mat) {
 				}
 			}
 
+			bool shouldFlip = flipTexturesVertically;
+			if (mat->cameFromBMP) shouldFlip = !shouldFlip;
 			int pos = (y*width + x) * 2;
-			if (flipTexturesVertically)
+			if (shouldFlip)
 				pos = ((height - 1 - y)*width + x) * 2;
 
 			u16 texel = (r << 11) | (g << 6) | (b << 1) | a;
@@ -593,9 +709,11 @@ int processRGBA32Image(const char* filename, material * mat) {
 				createTransDL = true;
 			}
 
-			int pos = (y*width + x) * 4;
-			if (flipTexturesVertically)
-				pos = ((height - 1 - y)*width + x) * 4;
+			bool shouldFlip = flipTexturesVertically;
+			if (mat->cameFromBMP) shouldFlip = !shouldFlip;
+			int pos = (y*width + x) * 2;
+			if (shouldFlip)
+				pos = ((height - 1 - y)*width + x) * 2;
 
 			tex[pos] = r;
 			tex[pos + 1] = g;
@@ -643,7 +761,7 @@ int processIntensityImage(const char* filename, material * mat, u8 bits) {
 			u8 b = data[(y*width + x) * 4 + 2];
 			u8 a = data[(y*width + x) * 4 + 3]; // 8 bit alpha
 
-			if (a < 0xFF || mat->opacity < 0xFF) {
+			if (a < 0xFF || mat->opacity < 0xFF || mat->enableAlphaMask) {
 				if (mat->opacity == 0xFF) mat->opacity *= a;
 				mat->type = TEXTURE_TRANSPARENT;
 				mat->hasTransparency = true;
@@ -653,9 +771,13 @@ int processIntensityImage(const char* filename, material * mat, u8 bits) {
 			u8 intensity = ((r + g + b) / 3);
 			if (bits == 4)
 				intensity /= 16;
-			int pos = (y*width + x);
-			if (flipTexturesVertically)
-				pos = ((height - 1 - y)*width + x);
+
+			bool shouldFlip = flipTexturesVertically;
+			if (mat->cameFromBMP) shouldFlip = !shouldFlip;
+			int pos = (y*width + x) * 2;
+			if (shouldFlip)
+				pos = ((height - 1 - y)*width + x) * 2;
+
 			if (bits == 4) { // I4
 				int npos = pos / 2;
 				if(pos % 2 == 0)
@@ -725,29 +847,25 @@ int processIntensityAlphaImage(const char* filename, material * mat, u8 bits) {
 					if (mat->opacity == 0xFF) mat->opacity *= a;
 					mat->type = TEXTURE_TRANSPARENT;
 					mat->hasTransparency = true;
-					createTransDL = true;
 			} else if (alpha == 0) {
 				if (mat->type != TEXTURE_TRANSPARENT) {
-					mat->hasTextureAlpha = true;
-					createAlphaDL = true;
 					mat->type = TEXTURE_ALPHA;
 				}
 			}
 
-			int pos = (y*width + x);
-			if (flipTexturesVertically)
-				pos = ((height - 1 - y)*width + x);
+			bool shouldFlip = flipTexturesVertically;
+			if (mat->cameFromBMP) shouldFlip = !shouldFlip;
+			int pos = (y*width + x) * 2;
+			if (shouldFlip)
+				pos = ((height - 1 - y)*width + x) * 2;
 
 			if (bits == 4) { // IA4
 				int npos = pos / 2;
-				//printf("(%d) I = 0x%X, A = 0x%X\n", npos, intensity, alpha);
 				if (pos % 2 == 0) {
 					tex[npos] = (((intensity << 1) | alpha) & 0xF) << 4;
-					//printf("(%d) tex[npos] = 0x%X\n", npos, tex[npos]);
 				}
 				else {
 					tex[npos] |= ((intensity << 1) | alpha) & 0xF;
-					//printf("(%d) tex[npos] = 0x%X\n", npos, tex[npos]);
 				}
 			}
 			else if (bits == 8) { // IA8
@@ -760,7 +878,11 @@ int processIntensityAlphaImage(const char* filename, material * mat, u8 bits) {
 			}
 		}
 	}
-	printf("Checking for copy! \n");
+
+	if (mat->type == TEXTURE_ALPHA) {
+		createAlphaDL = true;
+		mat->hasTextureAlpha = true;
+	}
 	if (!checkForTextureCopy(mat, tex)) {
 		textureEntry entry;
 		entry.offset = lastOffset;
@@ -816,6 +938,8 @@ void processMaterialLib(string str) {
 			m.opacityOrg = 0xFF;
 			m.enableGeoMode = false;
 			m.enableTextureColor = false;
+			m.enableAlphaMask = false;
+			m.cameFromBMP = false;
 			checkGeoModeInfo(m);
 			checkColorTexInfo(m);
 			materials.push_back(m);
@@ -841,7 +965,7 @@ void processMaterialLib(string str) {
 		}
 		else if (line.find("map_Kd ") == 0) {
 			//cout << "Found image: " << line << endl;
-			printf("Texture Type: 0x%X\n", size);
+			//printf("Texture Type: 0x%X\n", size);
 			checkTextureTypeInfo(materials.at(materials.size() - 1));
 			switch (materials.at(materials.size() - 1).texType) {
 				case TEX_RGBA16:
@@ -941,6 +1065,10 @@ void processFaces() {
 		normal nc = norms[stoi(splitSubA[2]) - 1];
 
 		finalVertex fa, fb, fc;
+		// copyIndex of -1 means that the vertex is unique.
+		fa.copyIndex = -1;
+		fb.copyIndex = -1;
+		fc.copyIndex = -1;
 
 		// Modify UV cordinates based on material.
 		ta.u = ta.u * (float)(f.mat->texWidth / 32.0) - 0x10;
@@ -1008,6 +1136,87 @@ void processFaces() {
 	}
 }
 
+// Checks to see if both arrays are equal.
+bool compareArrays(u8 * a, u8 * b, u32 size) {
+	for (int i = 0; i < size; ++i)
+		if (a[i] != b[i]) return false;
+	return true;
+}
+
+void removeDuplicateVertices() {
+	int dupCnt = 0;
+	for (materialPosition& mp : matPos) {
+		mp.vertStart = lastFVertPos;
+		for (int g = 0; g < mp.numGroups; g++) {
+			fvGroup& fvg = mp.fvg[g];
+			//printf("Material '%s'\n", mp.mat->name.c_str());
+			for (int i = 0; i < fvg.numTri * 3; ++i) {
+				for (int j = 0; j < fvg.numTri * 3; ++j) {
+					if (i == j) continue;
+					if (fvg.fv[j].copyIndex != -1) continue;
+					if (compareArrays(fvg.fv[i].data, fvg.fv[j].data, 16))
+					{
+						if (i > j) continue;
+						int min, max;
+						if (i > j) {
+							max = i;
+							min = j;
+						}
+						else {
+							max = j;
+							min = i;
+						}
+						//printf("(%d) Two arrays matched! %d & %d\n", g, min, max);
+						fvg.fv[max].copyIndex = min;
+						fvg.indexList[max] = fvg.indexList[min];
+						for (int k = max+1; k < fvg.numTri*3; k++) {
+							if(fvg.fv[k].copyIndex == -1) fvg.indexList[k]--;
+						}
+						fvg.size--;
+						dupCnt++;
+					}
+				}
+			}
+			lastFVertPos += fvg.size;
+		}
+	}
+	printf("Removed %d duplicate verticies! Saved 0x%X bytes.\n", dupCnt, dupCnt * 0x10);
+}
+
+void makeVertexGroups() {
+	for (int i = 0; i < matPos.size(); i++) {
+		int length = 0;
+		if (i < matPos.size() - 1) 
+			length = matPos.at(i + 1).position - matPos[i].position;
+		else 
+			length = currentFace - matPos[i].position;
+
+		if (length % 5 == 0)
+			matPos[i].numGroups = length / 5;
+		else
+			matPos[i].numGroups = (length / 5) + 1;
+
+		matPos[i].fvg = (fvGroup*)malloc(sizeof(fvGroup) * matPos[i].numGroups);
+
+		for (int g = 0; g < matPos[i].numGroups; g++) {
+			int s = 5;
+			if (g == matPos[i].numGroups - 1) s = length % 5;
+			if (s == 0) s = 5;
+			matPos[i].fvg[g].numTri = s;
+			for (int j = 0; j < s; j++) {
+				int from = (matPos[i].position + (j + g * 5)) * 3;
+				matPos[i].fvg[g].fv[j * 3] = combinedVerts[from];
+				matPos[i].fvg[g].fv[j * 3 + 1] = combinedVerts[from + 1];
+				matPos[i].fvg[g].fv[j * 3 + 2] = combinedVerts[from + 2];
+				matPos[i].fvg[g].indexList[j * 3] = j * 3;
+				matPos[i].fvg[g].indexList[j * 3 + 1] = j * 3 + 1;
+				matPos[i].fvg[g].indexList[j * 3 + 2] = j * 3 + 2;
+			}
+			matPos[i].fvg[g].size = matPos[i].fvg[g].numTri * 3;
+		}
+	}
+}
+
 void addMaterialPosition(string str) {
 	for (auto &m : materials) {
 		//printf("comparing %s vs %s\n", m.name.c_str(), str.c_str());
@@ -1016,6 +1225,7 @@ void addMaterialPosition(string str) {
 			materialPosition mp;
 			mp.position = currentFace;
 			mp.mat = &m;
+			mp.fvg = NULL;
 			currentMaterial = &m;
 			mp.cLen = 0;
 			matPos.push_back(mp);
@@ -1064,7 +1274,18 @@ geoCmd strGeo(string str) {
 	return cmd;
 }
 
+genData strGen(string str) {
+	genData cmd;
+	vector<string> b = splitString(trim(str), " ");
+	for (int i = 0; i < b.size(); i++) {
+		cmd.data[i] = strtoul(b.at(i).c_str(), 0, 16);
+	}
+	cmd.len = b.size();
+	return cmd;
+}
+
 void resetVariables() {
+	for (materialPosition& mp : matPos) if(mp.fvg != NULL) free(mp.fvg);
 	matPos.clear();
 	verts.clear();
 	norms.clear();
@@ -1072,6 +1293,7 @@ void resetVariables() {
 	materials.clear();
 	faces.clear();
 	combinedVerts.clear();
+	//waterBoxes.clear();
 	currentFace = 0;
 	lastPos = 0;
 	lastOffset = 0;
@@ -1141,6 +1363,7 @@ void addCmd03(vector<f3d>& cmds, material& mat, u32 addOffset) {
 		u32 off = startSegOffset;
 		if (mat.enableTextureColor) 
 			off = startSegOffset + addOffset + mat.texColOffset;
+		//printf("CMD 03: (%s) texColOffset = 0x%X\n", mat.name.c_str(), mat.texColOffset);
 		char cmd[24];
 		sprintf(cmd, "03 86 00 00 %X %X %X %X", curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
 		cmds.push_back(strF3D(cmd));
@@ -1154,19 +1377,27 @@ void addCmd03(vector<f3d>& cmds, material& mat, u32 addOffset) {
 	}
 }
 
-void addCmd04(vector<f3d>& cmds, material& mat, int left, int offset) {
-	u32 off = startSegOffset+offset;
-	int amount = 0xF0;
-	if (left < 5) amount = (left * 3)*0x10;
+void addTriCmds(vector<f3d>& cmds, material& mat, fvGroup& grp, int offset) {
+	u32 off = startSegOffset + offset;
+	int amount = grp.numTri * 3 * 0x10;
+	//printf("Group size = 0x%X\n", grp.size);
+	//printf("04: offset = 0x%X, amount = 0x%X\n", off, amount);
 	char cmd[24];
-	sprintf(cmd, "04 %X 00 %X %X %X %X %X", amount-0x10, amount, curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
+	sprintf(cmd, "04 %X 00 %X %X %X %X %X", amount - 0x10, amount, curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
+	//printf("%s\n", cmd);
 	cmds.push_back(strF3D(cmd));
-}
 
-void addCmdBF(vector<f3d>& cmds, material& mat, int l) {
-	char cmd[24];
-	sprintf(cmd, "BF 00 00 00 00 %X %X %X", (l * 3) * 0xA, (l * 3 + 1) * 0xA, (l * 3 + 2) * 0xA);
-	cmds.push_back(strF3D(cmd));
+	for (int i = 0; i < grp.numTri; i++) {
+		char cmd[24];
+
+		u8 a = grp.indexList[i * 3] * 0xA;
+		u8 b = grp.indexList[i * 3 + 1] * 0xA;
+		u8 c = grp.indexList[i * 3 + 2] * 0xA;
+
+		sprintf(cmd, "BF 00 00 00 00 %X %X %X", a, b, c);
+		//printf("%s\n", cmd);
+		cmds.push_back(strF3D(cmd));
+	}
 }
 
 void addCmdF2(vector<f3d>& cmds, material& mat) {
@@ -1181,7 +1412,7 @@ void addCmdF2(vector<f3d>& cmds, material& mat) {
 void addCmdF3(vector<f3d>& cmds, material& mat) {
 	//(((width)*(height) + siz##_INCR) >> siz##_SHIFT) -1
 	u32 numTexels = ((mat.texWidth * mat.texHeight + getTexelIncrement(mat.texType)) >> getTexelShift(mat.texType)) - 1;
-	printf("F3: %d,%d,%d,%d numTexels = 0x%X \n", mat.texWidth, mat.texHeight, getTexelIncrement(mat.texType), getTexelShift(mat.texType), numTexels);
+	//printf("F3: %d,%d,%d,%d numTexels = 0x%X \n", mat.texWidth, mat.texHeight, getTexelIncrement(mat.texType), getTexelShift(mat.texType), numTexels);
 	int bpt = bytesPerType(mat.texType);
 	u32 tl;
 	if(bpt)
@@ -1235,7 +1466,7 @@ void addCmdF5(vector<f3d>& cmds, material& mat, bool first) {
 			else
 				lineScale = 0.125f;
 			u16 line = (u16)(mat.texWidth * lineScale) & 0x1FF;
-			printf("line size = 0x%X\n", line);
+			//printf("line size = 0x%X\n", line);
 			u32 upper = ((type << 16) | (line << 8)) & 0x00FFFFFF;
 			u8 maskS = (u8)ceil(log2(mat.texWidth)) & 0xF;
 			u8 maskT = (u8)ceil(log2(mat.texHeight)) & 0xF;
@@ -1265,7 +1496,10 @@ void addCmdFC(vector<f3d>& cmds, material& mat) {
 		else if (mat.texType == TEX_IA4 || mat.texType == TEX_IA8 || mat.texType == TEX_IA16)
 			cmds.push_back(strF3D("FC 12 9A 25 FF 37 FF FF"));
 		else if (mat.texType == TEX_I4 || mat.texType == TEX_I8)
-			cmds.push_back(strF3D("FC 30 B2 61 FF FF FF FF"));
+			if(mat.enableAlphaMask)
+				cmds.push_back(strF3D("FC 12 7E A0 FF FF F3 F8"));
+			else
+				cmds.push_back(strF3D("FC 30 B2 61 FF FF FF FF"));
 		else if (mat.hasTextureAlpha)
 			if(enableFog)
 				cmds.push_back(strF3D("FC FF FF FF FF FC F2 38"));
@@ -1345,6 +1579,8 @@ void importOBJ(const char* objPath, const char* col_data) {
 	}
 	centerVertices();
 	processFaces();
+	makeVertexGroups();
+	removeDuplicateVertices();
 	infile.close();
 	//printf("Import Size: 0x%x\n", 0x10+getCombinedTextureSizes()+getCombinedVertSizes());
 
@@ -1359,16 +1595,18 @@ void importOBJ(const char* objPath, const char* col_data) {
 		if (!mt.isTextureCopy) curSegOffset += mt.size;
 		if (mt.enableTextureColor) {
 			mt.texColOffset = curSegOffset;
-			//printf("Texture '%s' Color: 0x%X\n", mt.name.c_str(), mt.color);
+			printf("Texture '%s' Color: 0x%X\n", mt.name.c_str(), mt.color);
 			curSegOffset += 0x10;
 		}
 	}
 
 	int startVerts = curSegOffset;
-	for (finalVertex fv : combinedVerts) {
-		//printHexBytes(fv.data, 16); // Vertices
-		curSegOffset += 0x10;
+	for (materialPosition mp : matPos) {
+		for (int i = 0; i < mp.numGroups; i++) {
+			curSegOffset += mp.fvg[i].size * 0x10;
+		}
 	}
+
 	//printf("Number of tri: %X\n",((curSegOffset-startVerts)/0x10)/3);
 	// We need to seperate the model into at most 3 seperate DLs.
 	vector<f3d> solidCmds; // For textures/color with no transparency in them. (Layer 1)
@@ -1410,6 +1648,9 @@ void importOBJ(const char* objPath, const char* col_data) {
 					if(matPos.at(i - 1).mat->color != mp.mat->color)
 						addCmd03(solidCmds, *mp.mat, importStart - romPos);
 				}
+				else if (mp.mat->enableTextureColor) {
+					addCmd03(solidCmds, *mp.mat, importStart - romPos);
+				}
 			}
 			if (lastTextureType == COLOR_SOLID && mp.mat->type == COLOR_SOLID) {
 				addCmd03(solidCmds, *mp.mat, importStart-romPos);
@@ -1424,17 +1665,14 @@ void importOBJ(const char* objPath, const char* col_data) {
 			addCmdF5(solidCmds, *mp.mat, false);
 			addCmdF2(solidCmds, *mp.mat);
 		}
-		int length;
-		//printf("Material '%s': %d \n", mp.mat->name.c_str(), mp.position);
-		if (i < matPos.size() - 1) length = matPos.at(i + 1).position - mp.position;
-		else length = currentFace - mp.position;
-		//printf("Length: %d \n", length);
-		for (int l = 0; l < length; l++) {
-			if (l % 5 == 0) {
-				addCmd04(solidCmds, *mp.mat, length - l, startVerts + ((mp.position * 3 + l * 3) * 0x10));
-			}
-			addCmdBF(solidCmds, *mp.mat, l % 5);
+
+		//printf("Material '%s': %d, vertStart = %d\n", mp.mat->name.c_str(), mp.position, mp.vertStart);
+		int grpOff = 0;
+		for (int i = 0; i < mp.numGroups; i++) {
+			addTriCmds(solidCmds, *mp.mat, mp.fvg[i], startVerts + (mp.vertStart + grpOff) * 0x10);
+			grpOff += mp.fvg[i].size;
 		}
+
 		if (mp.mat->enableGeoMode) {
 			if(i+1 < matPos.size()) if (matPos.at(i + 1).mat->enableGeoMode) continue;
 			solidCmds.push_back(strF3D("B6 00 00 00 FF FF FF FF"));
@@ -1487,16 +1725,11 @@ void importOBJ(const char* objPath, const char* col_data) {
 				addCmdF5(alphaCmds, *mp.mat, false);
 				addCmdF2(alphaCmds, *mp.mat);
 			}
-			int length;
 			//printf("Material '%s': %d \n", mp.mat->name.c_str(), mp.position);
-			if (i < matPos.size() - 1) length = matPos.at(i + 1).position - mp.position;
-			else length = currentFace - mp.position;
-			//printf("Length: %d \n", length);
-			for (int l = 0; l < length; l++) {
-				if (l % 5 == 0) {
-					addCmd04(alphaCmds, *mp.mat, length - l, startVerts + ((mp.position * 3 + l * 3) * 0x10));
-				}
-				addCmdBF(alphaCmds, *mp.mat, l % 5);
+			int grpOff = 0;
+			for (int i = 0; i < mp.numGroups; i++) {
+				addTriCmds(alphaCmds, *mp.mat, mp.fvg[i], startVerts + (mp.vertStart + grpOff) * 0x10);
+				grpOff += mp.fvg[i].size;
 			}
 			if (mp.mat->enableGeoMode) {
 				alphaCmds.push_back(strF3D("B6 00 00 00 FF FF FF FF"));
@@ -1535,7 +1768,7 @@ void importOBJ(const char* objPath, const char* col_data) {
 						resetBF = true;
 					}
 				}
-				//printf("Current type: %d\n", mp.mat->type);
+				//printf("Current trans mat: %s\n", mp.mat->name.c_str());
 				addCmdFC(transCmds, *mp.mat);
 				addCmd03(transCmds, *mp.mat, importStart - romPos);
 				if (mp.mat->type == COLOR_TRANSPARENT) {
@@ -1548,7 +1781,9 @@ void importOBJ(const char* objPath, const char* col_data) {
 				if (i > 0) {
 					if (matPos.at(i - 1).mat->enableTextureColor && mp.mat->enableTextureColor) {
 						if (matPos.at(i - 1).mat->color != mp.mat->color)
-							addCmd03(solidCmds, *mp.mat, importStart - romPos);
+							addCmd03(transCmds, *mp.mat, importStart - romPos);
+					} else if (mp.mat->enableTextureColor) {
+						addCmd03(transCmds, *mp.mat, importStart - romPos);
 					}
 				}
 				if (lastTextureType == COLOR_TRANSPARENT && mp.mat->type == COLOR_TRANSPARENT) {
@@ -1567,16 +1802,11 @@ void importOBJ(const char* objPath, const char* col_data) {
 				addCmdF5(transCmds, *mp.mat, false);
 				addCmdF2(transCmds, *mp.mat);
 			}
-			int length;
 			//printf("Material '%s': %d \n", mp.mat->name.c_str(), mp.position);
-			if (i < matPos.size() - 1) length = matPos.at(i + 1).position - mp.position;
-			else length = currentFace - mp.position;
-			//printf("Length: %d \n", length);
-			for (int l = 0; l < length; l++) {
-				if (l % 5 == 0) {
-					addCmd04(transCmds, *mp.mat, length - l, startVerts + ((mp.position * 3 + l * 3) * 0x10));
-				}
-				addCmdBF(transCmds, *mp.mat, l % 5);
+			int grpOff = 0;
+			for (int i = 0; i < mp.numGroups; i++) {
+				addTriCmds(transCmds, *mp.mat, mp.fvg[i], startVerts + (mp.vertStart + grpOff) * 0x10);
+				grpOff += mp.fvg[i].size;
 			}
 			lastMat = mp.mat;
 		}
@@ -1616,20 +1846,37 @@ void importOBJ(const char* objPath, const char* col_data) {
 			curOff += 0x10;
 		}
 	}
+	/*
 	for (finalVertex fv : combinedVerts) {
 		memcpy(importData + curOff, fv.data, 0x10);
 		curOff += 0x10;
 	}
+	*/
+	for (materialPosition mp : matPos) {
+		for (int g = 0; g < mp.numGroups; g++) {
+			int last = -1;
+			for (int i = 0; i < mp.fvg[g].numTri * 3; i++){
+				if (mp.fvg[g].indexList[i] > last) {
+					memcpy(importData + curOff, mp.fvg[g].fv[i].data, 0x10);
+					last++;
+					curOff += 0x10;
+				}
+			}
+		}
+	}
+
 	for (f3d cmd : solidCmds) {
 		memcpy(importData + curOff, cmd.data, 8);
 		curOff += 8;
 	}
+
 	if (createAlphaDL) {
 		for (f3d cmd : alphaCmds) {
 			memcpy(importData + curOff, cmd.data, 8);
 			curOff += 8;
 		}
 	}
+
 	if (createTransDL) {
 		for (f3d cmd : transCmds) {
 			memcpy(importData + curOff, cmd.data, 8);
@@ -1646,6 +1893,7 @@ void importOBJ(const char* objPath, const char* col_data) {
 	}
 
 	if(col_data != NULL && err.id == 0) importOBJCollision(objPath, col_data, true);
+
 	resetVariables();
 }
 
@@ -1765,16 +2013,16 @@ void importOBJCollision(const char* objPath, const char* col_data, bool continue
 	}
 	collision.push_back(0x0041);
 
-	if (enableWaterBoxes && waterBoxes.size() > 0) {
+	if (waterBoxes.size() > 0) {
 		collision.push_back(0x0044);
 		collision.push_back(waterBoxes.size());
 		curSegOffset += 4;
 		for (waterBox& wb : waterBoxes) {
-			collision.push_back(wb.type);
-			collision.push_back(wb.x1);
-			collision.push_back(wb.z1);
-			collision.push_back(wb.x2);
-			collision.push_back(wb.z2);
+			collision.push_back(wb.index);
+			collision.push_back(wb.minx);
+			collision.push_back(wb.minz);
+			collision.push_back(wb.maxx);
+			collision.push_back(wb.maxz);
 			collision.push_back(wb.y);
 			curSegOffset += 12;
 		}
@@ -1797,7 +2045,128 @@ void importOBJCollision(const char* objPath, const char* col_data, bool continue
 		err.id = 100;
 		err.message = "Import data limit has been exceeded!";
 	}
+}
 
+void write16(u8* arr, u32 offset, u16 value){
+	arr[offset + 0] = (value >> 8) & 0xFF;
+	arr[offset + 1] = value & 0xFF;
+}
+
+void write32(u8* arr, u32 offset, u32 value) {
+	arr[offset + 0] = (value >> 24) & 0xFF;
+	arr[offset + 1] = (value >> 16) & 0xFF;
+	arr[offset + 2] = (value >> 8) & 0xFF;
+	arr[offset + 3] = value & 0xFF;
+}
+
+void writeMany(u8* arr, u32 offset, u32 amount, u8 value) {
+	//printf("# of 0x%X = %d\n", value, amount);
+	for (int i = 0; i < amount; i++) 
+		arr[offset + i] = value;
+}
+
+// This needs improving.
+void importWaterBoxData(int offset) {
+	u8 * importData = (u8*)malloc(offset + waterBoxes.size() * 0x20);
+
+	u32 BoxIndex = 0;
+	char cmd[256];
+	int cur = 0;
+	for (waterBox& wb: waterBoxes)
+	{
+		if (wb.type == 0) // regular water
+		{
+			wb.index = BoxIndex;
+			write16(importData, cur, BoxIndex);
+			u32 ind = 0x19001C00 + (BoxIndex * 0x20);
+			write32(importData, cur + 4, ind);
+			wb.pointer = (u32*)(0x1C00 + (BoxIndex * 0x20));
+			BoxIndex++;
+			cur += 8;
+		}
+
+	}
+	write16(importData, cur, 0xFFFF); // end list
+	cur += 2;
+	writeMany(importData, cur, 0x50 - cur, 0x01); // fill gap with 0x01
+	cur += 0x50 - cur;
+	int ToxicIndex = 0x32;
+	for (waterBox& wb : waterBoxes)
+	{
+		printf("Type: %d\n", wb.type);
+		if (wb.type == 1) // toxic haze
+		{
+			wb.index = ToxicIndex;
+			write16(importData, cur, ToxicIndex);
+			u32 ind = 0x19001C00 + (BoxIndex * 0x20);
+			write32(importData, cur + 4, ind);
+			wb.pointer = (u32*)(0x1C00 + (BoxIndex * 0x20));
+			BoxIndex++;
+			ToxicIndex++;
+			cur += 8;
+		}
+	}
+	write16(importData, cur, 0xFFFF); // end list
+	cur += 2;
+	writeMany(importData, cur, 0xA0 - cur, 0x01); // fill gap with 0x01
+	cur += 0xA0 - cur;
+	int MistIndex = 0x33;
+	for (waterBox& wb : waterBoxes)
+	{
+		if (wb.type == 2) // mist
+		{
+			wb.index = MistIndex;
+			write16(importData, cur, MistIndex);
+			u32 ind = 0x19001C00 + (BoxIndex * 0x20);
+			write32(importData, cur + 4, ind);
+			wb.pointer = (u32*)(0x1C00 + (BoxIndex * 0x20));
+			BoxIndex++;
+			MistIndex++;
+			cur += 8;
+		}
+	}
+	write16(importData, cur, 0xFFFF); // end list
+	cur += 2;
+	writeMany(importData, cur, offset - cur, 0x01); // fill gap with 0x01
+	cur += offset - cur;
+
+	//size = offset;
+	for (waterBox& wb : waterBoxes)
+	{
+		write32(importData, cur, 0x00010000);
+		write32(importData, cur + 4, 0x000F0000 | wb.scale);
+
+		write16(importData, cur + 8, wb.minx);
+		write16(importData, cur + 10, wb.minz);
+		write16(importData, cur + 12, wb.maxx);
+		write16(importData, cur + 14, wb.minz);
+		write16(importData, cur + 16, wb.maxx);
+		write16(importData, cur + 18, wb.maxz);
+		write16(importData, cur + 20, wb.minx);
+		write16(importData, cur + 22, wb.maxz);
+
+		if(wb.type == 1)
+			write32(importData, cur + 24, 0x000000B4);
+		else
+			write32(importData, cur + 24, 0x00010078);
+
+		if (wb.type == 1)
+			write32(importData, cur + 28, 0x00010000);
+		else
+			write32(importData, cur + 28, 0x00000000);
+
+		cur += 0x20;
+	}
+
+	//printHexBytes(importData, cur);
+	if (curImp->curPos + cur <= curImp->limit) {
+		memcpy(curImp->data + curImp->curPos, importData, cur);
+		curImp->curPos += cur;
+	}
+	else {
+		err.id = 100;
+		err.message = "Import data limit has been exceeded!";
+	}
 }
 
 void importGeoLayout(const char* objPathName, bool forLevel) {
@@ -1857,6 +2226,17 @@ void importGeoLayout(const char* objPathName, bool forLevel) {
 			}
 			cmds.push_back(strGeo("17 00 00 00"));
 			cmds.push_back(strGeo("18 00 00 00 80 27 61 D0"));
+			if (waterBoxes.size() > 0) {
+				bool hw = 0, ht = 0, hm = 0;
+				for (waterBox wb : waterBoxes) {
+					if (wb.type == 0) hw = 1;
+					else if (wb.type == 1) ht = 1;
+					else if (wb.type == 2) hm = 1;
+				}
+				if (hw) cmds.push_back(strGeo("18 00 50 00 80 2D 10 4C"));
+				if (ht) cmds.push_back(strGeo("18 00 50 01 80 2D 10 4C"));
+				if (hm) cmds.push_back(strGeo("18 00 50 02 80 2D 10 4C"));
+			}
 			cmds.push_back(strGeo("05 00 00 00"));
 			cmds.push_back(strGeo("05 00 00 00"));
 			cmds.push_back(strGeo("05 00 00 00"));
@@ -2013,13 +2393,6 @@ void importHexData(char* hexString) {
 			hexData[++pos] = stoi(pch, 0, 16);
 		}
 	}
-	/*
-	printf("First two: 0x%X\n", (hexData[0] << 8) | hexData[1]);
-	for (int i = 0; i < size; i += 2) {
-		printf("Before: 0x%X\n", (hexData[i] << 8) | hexData[i + 1]);
-		swap(hexData[i], hexData[i + 1]);
-		printf("After: 0x%X\n", (hexData[i] << 8) | hexData[i + 1]);
-	}*/
 	
 	memcpy(curImp->data+curImp->curPos, hexData, size);
 	curImp->curPos += size;
@@ -2046,6 +2419,15 @@ void setLightAndDarkValues(u32 light, u32 dark) {
 }
 
 void parseIntValue(string& input, int& value) {
+	if (input.find("0x") == 0)
+		value = stoi(input.substr(2), 0, 16);
+	else if (input.find("$") == 0)
+		value = stoi(input.substr(1), 0, 16);
+	else
+		value = stoi(input);
+}
+
+void parseShortValue(string& input, s16& value) {
 	if (input.find("0x") == 0)
 		value = stoi(input.substr(2), 0, 16);
 	else if (input.find("$") == 0)
@@ -2090,29 +2472,18 @@ void importDataIntoRom() {
 	}
 }
 
-/*
-FIX WATER BOXES!
-
-waterBox wb;
-wb.type = 0;
-wb.x1 = -0x2000;
-wb.z1 = -0x2000;
-wb.x2 = 0x2000;
-wb.z2 = 0x2000;
-wb.y = 0;
-waterBoxes.push_back(wb);
-*/
-
 int main(int argc, char *argv[]) {
+
 	vector<vector<string>> arguments;
 	for (int i = 1; i < argc;) {
-		char * data[10];
+		char * data[256];
 		int cnt = 1;
 		vector<string> arg;
 		arg.push_back(argv[i]);
-		for (int j = 1; j < 10; ++j) {
+		for (int j = 1;; ++j) {
 			if (i + j >= argc) break;
-			if (argv[i + j][0] == '-') break;
+			if (argv[i + j][0] == '-') 
+				if(isalpha(argv[i + j][1])) break; // Won't break with negative numbers.
 			data[j] = argv[i + j];
 			arg.push_back(argv[i + j]);
 			cnt++;
@@ -2123,6 +2494,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	for (vector<string> arg : arguments) {
+		//printf("%s\n",arg[0].c_str());
 		if (err.id) break;
 		string cmd = tolowercase(arg[0]);
 		if (cmd.compare("-r") == 0 && arg.size() > 1) {
@@ -2177,9 +2549,9 @@ int main(int argc, char *argv[]) {
 			//printf("Model scale size set to: %f\n", modelScale);
 		}
 		else if (cmd.compare("-o") == 0 && arg.size() > 3) {
-			parseIntValue(arg[1], (int&)xOff);
-			parseIntValue(arg[2], (int&)yOff);
-			parseIntValue(arg[3], (int&)zOff);
+			parseShortValue(arg[1], xOff);
+			parseShortValue(arg[2], yOff);
+			parseShortValue(arg[3], zOff);
 		} // 
 		else if (cmd.compare("-sv") == 0 && arg.size() > 2) {
 			u32 light, dark;
@@ -2301,11 +2673,61 @@ int main(int argc, char *argv[]) {
 		else if (cmd.compare("-tt") == 0 && arg.size() > 1) {
 			texTypeData = arg[1];
 		}
+		else if (cmd.compare("-df") == 0 && arg.size() > 6) {
+			arg[1] = tolowercase(arg[1]);
+			if (arg[1].compare("t") == 0 || arg[1].compare("1") == 0 || arg[1].compare("true") == 0)
+				enableDeathFloor = true;
+			else if (arg[1].compare("f") == 0 || arg[1].compare("0") == 0 || arg[1].compare("false") == 0)
+				enableDeathFloor = false;
+			parseShortValue(arg[2], dfx1);
+			parseShortValue(arg[3], dfz1);
+			parseShortValue(arg[4], dfx2);
+			parseShortValue(arg[5], dfz2);
+			parseShortValue(arg[6], dfy);
+			//printf("Death floor %d %d %d %d %d %d\n", enableDeathFloor, dfx1, dfz1, dfx2, dfz2, dfy);
+		}
+		else if (cmd.compare("-wbc") == 0) {
+			waterBoxes.clear();
+		}
+		else if (cmd.compare("-wb") == 0 && arg.size() > 8) {
+			//BOX_TYPE INDEX X1_POS Z1_POS X2_POS Z2_POS HEIGHT SCALE
+			waterBox wb;
+			parseShortValue(arg[1], (s16&)wb.type);
+			parseShortValue(arg[2], (s16&)wb.index);
+
+			s16 minx, minz, maxx, maxz;
+			parseShortValue(arg[3], minx);
+			parseShortValue(arg[4], minz);
+			parseShortValue(arg[5], maxx);
+			parseShortValue(arg[6], maxz);
+			parseShortValue(arg[7], wb.y);
+			parseShortValue(arg[8], (s16&)wb.scale);
+			wb.pointer = 0;
+			if (minx > maxx) {
+				int t = minx;
+				minx = maxx;
+				maxx = t;
+			}
+			if (minz > maxz) {
+				int t = minz;
+				minz = maxz;
+				maxz = t;
+			}
+			wb.minx = minx;
+			wb.minz = minz;
+			wb.maxx = maxx;
+			wb.maxz = maxz;
+			printf("Adding water box: %d %d %d %d\n", minx, minz, maxx, maxz);
+			waterBoxes.push_back(wb);
+		}
+		else if (cmd.compare("-iwd") == 0) {
+			importWaterBoxData(0x400);
+		}
 		else if (cmd.compare("-vft") == 0 && arg.size() > 1) {
 			arg[1] = tolowercase(arg[1]);
 			if (arg[1].compare("t") == 0 || arg[1].compare("1") == 0 || arg[1].compare("true") == 0)
 				flipTexturesVertically = true;
-			if (arg[1].compare("f") == 0 || arg[1].compare("0") == 0 || arg[1].compare("false") == 0)
+			else if (arg[1].compare("f") == 0 || arg[1].compare("0") == 0 || arg[1].compare("false") == 0)
 				flipTexturesVertically = false;
 			//printf("Am I flipping the textures vertically? %s\n", flipTexturesVertically ? "Yes I am!" : "No I'm not");
 		}
@@ -2313,7 +2735,7 @@ int main(int argc, char *argv[]) {
 			arg[1] = tolowercase(arg[1]);
 			if (arg[1].compare("t") == 0 || arg[1].compare("1") == 0 || arg[1].compare("true") == 0)
 				centerVerts = true;
-			if (arg[1].compare("f") == 0 || arg[1].compare("0") == 0 || arg[1].compare("false") == 0)
+			else if (arg[1].compare("f") == 0 || arg[1].compare("0") == 0 || arg[1].compare("false") == 0)
 				centerVerts = false;
 		}
 		else if (cmd.compare("-put") == 0 && arg.size() > 3) {
@@ -2388,8 +2810,9 @@ int main(int argc, char *argv[]) {
 
 	if (err.id)
 		printf("Error %d: %s\n", err.id, err.message);
-	else 
+	else
 		importDataIntoRom();
 	
+	resetVariables();
 	return err.id;
 }
