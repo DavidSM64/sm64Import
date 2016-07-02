@@ -1,5 +1,10 @@
 /*
-sm64Import v0.0 by Davideesk
+sm64Import v0.1 by Davideesk
+
+Todo list in the future:
+Fix reduce vertices level 2 bug.
+Support CI textures.
+Improve water boxes.
 */
 
 #include "lodepng.h"
@@ -127,15 +132,14 @@ typedef struct {
 } face;
 
 typedef struct {
-	s8 copyIndex;
 	u8 data[16];
 } finalVertex;
 
 typedef struct {
-	u8 numTri;
-	u8 size;
-	u8 indexList[15];
-	finalVertex fv[15];
+	s16 numTri;
+	s16 size;
+	s8 indexList[0x800];
+	vector<finalVertex> fv;
 } fvGroup;
 
 typedef struct {
@@ -158,7 +162,7 @@ typedef struct {
 	material * mat;
 	int numGroups;
 	int vertStart;
-	fvGroup * fvg;
+	vector<fvGroup> fvg;
 } materialPosition;
 
 typedef struct {
@@ -257,6 +261,13 @@ u32 startSegOffset = 0;
 u32 curSegOffset = 0;
 bool flipTexturesVertically = false;
 bool centerVerts = false;
+/*
+Reduces the number of duplicate verticies.
+Level 0 = No reduction.
+Level 1 = Reduce only in the same 0x04 group.
+Level 2 = Reduce and push up. (A little buggy, will fully fix in next version)
+*/
+u8 reduceVertLevel = 1;
 float modelScale = 1.0f;
 s16 xOff = 0;
 s16 yOff = 0;
@@ -391,7 +402,6 @@ void addObjPtr(char* name) {
 	op.geo_ptr = 0;
 	op.col_ptr = 0;
 	ptrs.push_back(op);
-	//printf("Adding an objPtr: %s\n", name);
 }
 
 void addPtr(char* name, PtrType type, u32 data) {
@@ -619,7 +629,7 @@ int processRGBA16Image(const char* filename, material * mat) {
 	fwrite((u8*)&data[0], 1, width*height * 4, tst);
 	fclose(tst);
 
-	printf("Texture '%s': w=%d, h=%d, size = 0x%X\n",filename,width,height,data.size());
+	//printf("Texture '%s': w=%d, h=%d, size = 0x%X\n",filename,width,height,data.size());
 	mat->texWidth = width;
 	mat->texHeight = height;
 	vector<u8> tex = vector<u8>(data.size() / 2);
@@ -819,7 +829,7 @@ int processIntensityAlphaImage(const char* filename, material * mat, u8 bits) {
 	mat->texWidth = width;
 	mat->texHeight = height;
 	vector<u8> tex = vector<u8>((int)(data.size() / 4.0 * (bits / 8.0)));
-	printf("I%d Texture '%s': w=%d, h=%d, size = 0x%X\n", bits, filename, width, height, tex.size());
+	//printf("I%d Texture '%s': w=%d, h=%d, size = 0x%X\n", bits, filename, width, height, tex.size());
 
 	mat->type = TEXTURE_SOLID;
 
@@ -1065,10 +1075,9 @@ void processFaces() {
 		normal nc = norms[stoi(splitSubA[2]) - 1];
 
 		finalVertex fa, fb, fc;
-		// copyIndex of -1 means that the vertex is unique.
-		fa.copyIndex = -1;
-		fb.copyIndex = -1;
-		fc.copyIndex = -1;
+		//fa.shouldSkip = false;
+		//fb.shouldSkip = false;
+		//fc.shouldSkip = false;
 
 		// Modify UV cordinates based on material.
 		ta.u = ta.u * (float)(f.mat->texWidth / 32.0) - 0x10;
@@ -1136,6 +1145,7 @@ void processFaces() {
 	}
 }
 
+
 // Checks to see if both arrays are equal.
 bool compareArrays(u8 * a, u8 * b, u32 size) {
 	for (int i = 0; i < size; ++i)
@@ -1143,48 +1153,86 @@ bool compareArrays(u8 * a, u8 * b, u32 size) {
 	return true;
 }
 
-void removeDuplicateVertices() {
+void moveElementsInGroupUpward(fvGroup& grp, int amount, int start) {
+	for (int i = 0; i < amount; i++) {
+		//printf("Erasing element %d, size = %d: ", start + i, grp.fv.size());
+		//printHexBytes(grp.fv[start].data, 16);
+		grp.fv.erase(grp.fv.begin()+start);
+		if (grp.size > 0) grp.size--;
+	}
+}
+
+bool moveVertsBack(fvGroup& to, fvGroup& from) {
+	//printf("to.size = %d, from.size = %d\n", to.size, from.size);
+	//printHexBytes((u8*)to.indexList, to.numTri * 3);
+	if (from.size < 3) return false;
+	if (to.size < 14) {
+		to.fv.push_back(from.fv[0]);
+		to.fv.push_back(from.fv[1]);
+		to.fv.push_back(from.fv[2]);
+		to.indexList[to.numTri * 3] = to.size;
+		to.indexList[to.numTri * 3 + 1] = to.size + 1;
+		to.indexList[to.numTri * 3 + 2] = to.size + 2;
+		//printf("Adding local verts: %d, %d, %d\n", to.indexList[to.numTri * 3], to.indexList[to.numTri * 3 + 1], to.indexList[to.numTri * 3 + 2]);
+		to.size += 3;
+		moveElementsInGroupUpward(from, 3, 0);
+		to.numTri++;
+		return true;
+	}
+	return false;
+}
+
+void updateIndexList(fvGroup& grp, u8 removed, u8 replaceWith) {
+	for (int i = 0; i < grp.numTri * 3; i++) {
+		if (grp.indexList[i] < removed) continue;
+		if (grp.indexList[i] == removed)
+			grp.indexList[i] = replaceWith;
+		else
+			grp.indexList[i]--;
+	}
+}
+
+void updatePositions(int vs) {
+	for (materialPosition& mp : matPos) {
+		if (mp.vertStart <= vs) continue;
+		if (mp.vertStart < 0x10) continue;
+		mp.vertStart -= 0x10;
+	}
+}
+
+void removeDuplicateVertices(u8 level) {
+	if (level < 1) return;
 	int dupCnt = 0;
 	for (materialPosition& mp : matPos) {
-		mp.vertStart = lastFVertPos;
 		for (int g = 0; g < mp.numGroups; g++) {
 			fvGroup& fvg = mp.fvg[g];
-			//printf("Material '%s'\n", mp.mat->name.c_str());
-			for (int i = 0; i < fvg.numTri * 3; ++i) {
-				for (int j = 0; j < fvg.numTri * 3; ++j) {
-					if (i == j) continue;
-					if (fvg.fv[j].copyIndex != -1) continue;
+			if (fvg.size < 1) continue;
+			//printf("group %d size = %d\n", g, fvg.size);
+			for (int i = 0; i < fvg.size; i++) {
+				for (int j = i+1; j < fvg.size; j++) {
 					if (compareArrays(fvg.fv[i].data, fvg.fv[j].data, 16))
 					{
-						if (i > j) continue;
-						int min, max;
-						if (i > j) {
-							max = i;
-							min = j;
-						}
-						else {
-							max = j;
-							min = i;
-						}
-						//printf("(%d) Two arrays matched! %d & %d\n", g, min, max);
-						fvg.fv[max].copyIndex = min;
-						fvg.indexList[max] = fvg.indexList[min];
-						for (int k = max+1; k < fvg.numTri*3; k++) {
-							if(fvg.fv[k].copyIndex == -1) fvg.indexList[k]--;
-						}
-						fvg.size--;
+						//printf("(%d) Two arrays matched! %d & %d\n", g, i, j);
+						moveElementsInGroupUpward(fvg, 1, j);
+						updateIndexList(fvg, j, i);
+						updatePositions(mp.vertStart);
 						dupCnt++;
 					}
 				}
 			}
-			lastFVertPos += fvg.size;
+			if (g < mp.numGroups - 1 && level > 1) {
+				if (moveVertsBack(mp.fvg[g], mp.fvg[g + 1])) g--;
+			}
 		}
+		//printf("vertStart = 0x%X\n", mp.vertStart);
 	}
-	printf("Removed %d duplicate verticies! Saved 0x%X bytes.\n", dupCnt, dupCnt * 0x10);
+	printf("Removed %d duplicate vertices. Saved 0x%X bytes of data.\n", dupCnt, dupCnt * 0x10);
 }
 
 void makeVertexGroups() {
+	int vs = 0;
 	for (int i = 0; i < matPos.size(); i++) {
+		matPos[i].vertStart = vs;
 		int length = 0;
 		if (i < matPos.size() - 1) 
 			length = matPos.at(i + 1).position - matPos[i].position;
@@ -1196,7 +1244,12 @@ void makeVertexGroups() {
 		else
 			matPos[i].numGroups = (length / 5) + 1;
 
-		matPos[i].fvg = (fvGroup*)malloc(sizeof(fvGroup) * matPos[i].numGroups);
+		for (int j = 0; j < matPos[i].numGroups; j++) {
+			fvGroup newGroup;
+			newGroup.numTri = 0;
+			newGroup.size = 0;
+			matPos[i].fvg.push_back(newGroup);
+		}
 
 		for (int g = 0; g < matPos[i].numGroups; g++) {
 			int s = 5;
@@ -1205,14 +1258,16 @@ void makeVertexGroups() {
 			matPos[i].fvg[g].numTri = s;
 			for (int j = 0; j < s; j++) {
 				int from = (matPos[i].position + (j + g * 5)) * 3;
-				matPos[i].fvg[g].fv[j * 3] = combinedVerts[from];
-				matPos[i].fvg[g].fv[j * 3 + 1] = combinedVerts[from + 1];
-				matPos[i].fvg[g].fv[j * 3 + 2] = combinedVerts[from + 2];
+				matPos[i].fvg[g].fv.push_back(combinedVerts[from]);
+				matPos[i].fvg[g].fv.push_back(combinedVerts[from+1]);
+				matPos[i].fvg[g].fv.push_back(combinedVerts[from+2]);
 				matPos[i].fvg[g].indexList[j * 3] = j * 3;
 				matPos[i].fvg[g].indexList[j * 3 + 1] = j * 3 + 1;
 				matPos[i].fvg[g].indexList[j * 3 + 2] = j * 3 + 2;
 			}
 			matPos[i].fvg[g].size = matPos[i].fvg[g].numTri * 3;
+			vs += matPos[i].fvg[g].size * 0x10;
+			//printf("vs = 0x%X\n", vs);
 		}
 	}
 }
@@ -1225,7 +1280,7 @@ void addMaterialPosition(string str) {
 			materialPosition mp;
 			mp.position = currentFace;
 			mp.mat = &m;
-			mp.fvg = NULL;
+			//mp.fvg = NULL;
 			currentMaterial = &m;
 			mp.cLen = 0;
 			matPos.push_back(mp);
@@ -1285,7 +1340,6 @@ genData strGen(string str) {
 }
 
 void resetVariables() {
-	for (materialPosition& mp : matPos) if(mp.fvg != NULL) free(mp.fvg);
 	matPos.clear();
 	verts.clear();
 	norms.clear();
@@ -1293,7 +1347,6 @@ void resetVariables() {
 	materials.clear();
 	faces.clear();
 	combinedVerts.clear();
-	//waterBoxes.clear();
 	currentFace = 0;
 	lastPos = 0;
 	lastOffset = 0;
@@ -1378,18 +1431,19 @@ void addCmd03(vector<f3d>& cmds, material& mat, u32 addOffset) {
 }
 
 void addTriCmds(vector<f3d>& cmds, material& mat, fvGroup& grp, int offset) {
+	if (grp.size < 3) return;
 	u32 off = startSegOffset + offset;
-	int amount = grp.numTri * 3 * 0x10;
+	int amount = grp.size * 0x10;
 	//printf("Group size = 0x%X\n", grp.size);
 	//printf("04: offset = 0x%X, amount = 0x%X\n", off, amount);
+	//printHexBytes((u8*)grp.indexList, grp.numTri * 3);
+
 	char cmd[24];
-	sprintf(cmd, "04 %X 00 %X %X %X %X %X", amount - 0x10, amount, curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
+	sprintf(cmd, "04 %X 00 %X %X %X %X %X", amount - 0x10 & 0xFF, amount & 0xFF, curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
 	//printf("%s\n", cmd);
 	cmds.push_back(strF3D(cmd));
-
 	for (int i = 0; i < grp.numTri; i++) {
 		char cmd[24];
-
 		u8 a = grp.indexList[i * 3] * 0xA;
 		u8 b = grp.indexList[i * 3 + 1] * 0xA;
 		u8 c = grp.indexList[i * 3 + 2] * 0xA;
@@ -1410,7 +1464,6 @@ void addCmdF2(vector<f3d>& cmds, material& mat) {
 }
 
 void addCmdF3(vector<f3d>& cmds, material& mat) {
-	//(((width)*(height) + siz##_INCR) >> siz##_SHIFT) -1
 	u32 numTexels = ((mat.texWidth * mat.texHeight + getTexelIncrement(mat.texType)) >> getTexelShift(mat.texType)) - 1;
 	//printf("F3: %d,%d,%d,%d numTexels = 0x%X \n", mat.texWidth, mat.texHeight, getTexelIncrement(mat.texType), getTexelShift(mat.texType), numTexels);
 	int bpt = bytesPerType(mat.texType);
@@ -1580,7 +1633,7 @@ void importOBJ(const char* objPath, const char* col_data) {
 	centerVertices();
 	processFaces();
 	makeVertexGroups();
-	removeDuplicateVertices();
+	removeDuplicateVertices(reduceVertLevel);
 	infile.close();
 	//printf("Import Size: 0x%x\n", 0x10+getCombinedTextureSizes()+getCombinedVertSizes());
 
@@ -1601,9 +1654,10 @@ void importOBJ(const char* objPath, const char* col_data) {
 	}
 
 	int startVerts = curSegOffset;
-	for (materialPosition mp : matPos) {
-		for (int i = 0; i < mp.numGroups; i++) {
-			curSegOffset += mp.fvg[i].size * 0x10;
+	for (materialPosition& mp : matPos) {
+		for (int g = 0; g < mp.numGroups; g++) {
+			if (mp.fvg[g].size < 1) continue;
+			curSegOffset += mp.fvg[g].size * 0x10;
 		}
 	}
 
@@ -1669,8 +1723,8 @@ void importOBJ(const char* objPath, const char* col_data) {
 		//printf("Material '%s': %d, vertStart = %d\n", mp.mat->name.c_str(), mp.position, mp.vertStart);
 		int grpOff = 0;
 		for (int i = 0; i < mp.numGroups; i++) {
-			addTriCmds(solidCmds, *mp.mat, mp.fvg[i], startVerts + (mp.vertStart + grpOff) * 0x10);
-			grpOff += mp.fvg[i].size;
+			addTriCmds(solidCmds, *mp.mat, mp.fvg[i], startVerts + (mp.vertStart + grpOff));
+			grpOff += mp.fvg[i].size * 0x10;
 		}
 
 		if (mp.mat->enableGeoMode) {
@@ -1728,8 +1782,8 @@ void importOBJ(const char* objPath, const char* col_data) {
 			//printf("Material '%s': %d \n", mp.mat->name.c_str(), mp.position);
 			int grpOff = 0;
 			for (int i = 0; i < mp.numGroups; i++) {
-				addTriCmds(alphaCmds, *mp.mat, mp.fvg[i], startVerts + (mp.vertStart + grpOff) * 0x10);
-				grpOff += mp.fvg[i].size;
+				addTriCmds(alphaCmds, *mp.mat, mp.fvg[i], startVerts + (mp.vertStart + grpOff));
+				grpOff += mp.fvg[i].size * 0x10;
 			}
 			if (mp.mat->enableGeoMode) {
 				alphaCmds.push_back(strF3D("B6 00 00 00 FF FF FF FF"));
@@ -1805,8 +1859,8 @@ void importOBJ(const char* objPath, const char* col_data) {
 			//printf("Material '%s': %d \n", mp.mat->name.c_str(), mp.position);
 			int grpOff = 0;
 			for (int i = 0; i < mp.numGroups; i++) {
-				addTriCmds(transCmds, *mp.mat, mp.fvg[i], startVerts + (mp.vertStart + grpOff) * 0x10);
-				grpOff += mp.fvg[i].size;
+				addTriCmds(transCmds, *mp.mat, mp.fvg[i], startVerts + (mp.vertStart + grpOff));
+				grpOff += mp.fvg[i].size * 0x10;
 			}
 			lastMat = mp.mat;
 		}
@@ -1846,25 +1900,17 @@ void importOBJ(const char* objPath, const char* col_data) {
 			curOff += 0x10;
 		}
 	}
-	/*
-	for (finalVertex fv : combinedVerts) {
-		memcpy(importData + curOff, fv.data, 0x10);
-		curOff += 0x10;
-	}
-	*/
 	for (materialPosition mp : matPos) {
+		//printf("material '%s'\n", mp.mat->name.c_str());
 		for (int g = 0; g < mp.numGroups; g++) {
-			int last = -1;
-			for (int i = 0; i < mp.fvg[g].numTri * 3; i++){
-				if (mp.fvg[g].indexList[i] > last) {
-					memcpy(importData + curOff, mp.fvg[g].fv[i].data, 0x10);
-					last++;
-					curOff += 0x10;
-				}
+			if (mp.fvg[g].size < 1) continue;
+			for (int i = 0; i < mp.fvg[g].size; i++){
+				memcpy(importData + curOff, mp.fvg[g].fv[i].data, 0x10);
+				//printHexBytes(mp.fvg[g].fv[i].data, 0x10);
+				curOff += 0x10;
 			}
 		}
 	}
-
 	for (f3d cmd : solidCmds) {
 		memcpy(importData + curOff, cmd.data, 8);
 		curOff += 8;
@@ -1891,7 +1937,6 @@ void importOBJ(const char* objPath, const char* col_data) {
 		err.id = 100;
 		err.message = "Import data limit has been exceeded!";
 	}
-
 	if(col_data != NULL && err.id == 0) importOBJCollision(objPath, col_data, true);
 
 	resetVariables();
@@ -1934,7 +1979,6 @@ void importOBJCollision(const char* objPath, const char* col_data, bool continue
 		materialPosition * mp = &matPos.at(i);
 
 		int length;
-		//printf("Material (CLSN) '%s': %d \n", mp->mat->name.c_str(), mp->position);
 		if (i < matPos.size() - 1) length = matPos.at(i + 1).position - mp->position;
 		else length = currentFace - mp->position;
 		mp->cLen = length;
@@ -1947,7 +1991,6 @@ void importOBJCollision(const char* objPath, const char* col_data, bool continue
 			}
 		}
 	}
-
 	int collisionStart = curSegOffset;
 	vector<u16> collision;
 	collision.push_back(0x0040);
@@ -2093,7 +2136,7 @@ void importWaterBoxData(int offset) {
 	int ToxicIndex = 0x32;
 	for (waterBox& wb : waterBoxes)
 	{
-		printf("Type: %d\n", wb.type);
+		//printf("Type: %d\n", wb.type);
 		if (wb.type == 1) // toxic haze
 		{
 			wb.index = ToxicIndex;
@@ -2552,7 +2595,13 @@ int main(int argc, char *argv[]) {
 			parseShortValue(arg[1], xOff);
 			parseShortValue(arg[2], yOff);
 			parseShortValue(arg[3], zOff);
-		} // 
+		}
+		else if (cmd.compare("-option") == 0 && arg.size() > 1) {
+			arg[1] = tolowercase(arg[1]);
+			if (arg[1].compare("rvl") == 0 && arg.size() > 2) {
+				reduceVertLevel = stoi(arg[2]);
+			}
+		}
 		else if (cmd.compare("-sv") == 0 && arg.size() > 2) {
 			u32 light, dark;
 			parseIntValue(arg[1], (int&)light);
@@ -2571,12 +2620,7 @@ int main(int argc, char *argv[]) {
 			}
 		}
 		else if (cmd.compare("-io") == 0 && arg.size() > 1) {
-			if (romPath.empty()) {
-				err.id = 2;
-				err.message = "You have not defined a path to the ROM file yet!";
-				continue;
-			}
-			else if (romPos == 0xFFFFFFFF) {
+			if (romPos == 0xFFFFFFFF) {
 				err.id = 3;
 				err.message = "You have not defined a rom position yet!";
 				continue;
@@ -2595,12 +2639,7 @@ int main(int argc, char *argv[]) {
 			}
 		}
 		else if (cmd.compare("-ioc") == 0) {
-			if (romPath.empty()) {
-				err.id = 2;
-				err.message = "You have not defined a path to the ROM file yet!";
-				continue;
-			}
-			else if (romPos == 0xFFFFFFFF) {
+			if (romPos == 0xFFFFFFFF) {
 				err.id = 3;
 				err.message = "You have not defined a rom position yet!";
 				continue;
@@ -2609,13 +2648,7 @@ int main(int argc, char *argv[]) {
 				importOBJCollision(arg[1].c_str(), arg[2].c_str(), false);
 		}
 		else if (cmd.compare("-ig") == 0) {
-
-			if (romPath.empty()) {
-				err.id = 2;
-				err.message = "You have not defined a path to the ROM file yet!";
-				continue;
-			}
-			else if (romPos == 0xFFFFFFFF) {
+			if (romPos == 0xFFFFFFFF) {
 				err.id = 3;
 				err.message = "You have not defined a rom position yet!";
 				continue;
@@ -2717,10 +2750,10 @@ int main(int argc, char *argv[]) {
 			wb.minz = minz;
 			wb.maxx = maxx;
 			wb.maxz = maxz;
-			printf("Adding water box: %d %d %d %d\n", minx, minz, maxx, maxz);
+			//printf("Adding water box: %d %d %d %d\n", minx, minz, maxx, maxz);
 			waterBoxes.push_back(wb);
 		}
-		else if (cmd.compare("-iwd") == 0) {
+		else if (cmd.compare("-wd") == 0) {
 			importWaterBoxData(0x400);
 		}
 		else if (cmd.compare("-vft") == 0 && arg.size() > 1) {
@@ -2813,6 +2846,7 @@ int main(int argc, char *argv[]) {
 	else
 		importDataIntoRom();
 	
+	waterBoxes.clear();
 	resetVariables();
 	return err.id;
 }
