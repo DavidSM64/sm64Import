@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<!--Mario 64 Tweak File-->
+<m64tweak>
+<description>RCVI Hack (Reduces lag)</description>
+<patch>
+F00C0: 00 00 08 34
+</patch>
+</m64tweak>
