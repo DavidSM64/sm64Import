@@ -8,6 +8,9 @@ Libraries used:<br />
 - BMP.h - Used to decode .bmp files for textures<br />
 - rapidXML.h - Used to parse .xml files for importing tweak files.<br />
 
+Importing over BOB example ([Using this basic LevelScript .bin file for example](https://drive.google.com/uc?export=download&id=0B0ipn7N-yey8VkJDWnZrWC14M2s)):<br />
+<code>sm64Import.exe -df t 0x4000 0x4000 0xBFFF 0xBFFF -8000 -r "sm64.ext.z64" -a 0x2AC0F8 -ih "00 10 00 19 01 8E 00 00 01 8E 20 00 19 00 00 1C" -a 0x18E1800 0x19001800 -c 0x1500 -ib "LevelScript.bin" -a 0x18F0000 0x0E000000 -c 0x150000 -s 500 -io "Import.obj" "" -a 0x18E1700 0x19001700 -c 0x100 -ig "Import.obj" 1 -put "Import.obj" col 0x18E014C</code>
+
 Arguments:
  - <code>-a ROM_ADDRESS {SEG_POINTER}</code> Set the base ROM address (and optional segmented pointer) to import to. The segmented pointer is required for importing obj files.
  - <code>-c SIZE</code> Sets the max data cap. If the following import data size is larger than this, then the program will return an error.
