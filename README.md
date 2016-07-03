@@ -36,7 +36,7 @@ Arguments:
  - <code>-option OPTION VALUE</code> Changes an importer value. Currently the only option to change is the vertex reduction level. Example: <code>-option rvl 2</code> will set the vertex reduction level to 2.
  - <code>-fog ENABLED {FOG_TYPE RED_VALUE GREEN_VALUE BLUE_VALUE}</code> Enables/Disables fog in the current level.
  - <code>-r ROM_PATH</code> Defines the ROM to import data to
- - <code>-run PROGRAM_EXE_PATH</code> Runs a exe program.
+ - <code>-run PROGRAM</code> Runs a exe program with arguments.
  - <code>-s SCALE_AMOUNT</code> Scale factor for model.
  - <code>-sv LIGHT_VALUE DARK_VALUE</code> Set shading value for levels.
  - <code>-sgm DATA</code> Sets the geometry mode for a particular material. Example: <code>-sgm "TextureName:0x00040000"</code>
