@@ -1,14 +1,22 @@
-# sm64Import
+# sm64Import v0.1
 
-sm64Import v0.1
+This tool can be used to import .obj files, binary files, hex data, and tweaks into the Super Mario 64 ROM.
 
-Libraries used:<br />
-- lodepng.h - Used to decode .png files for textures<br />
-- jpeg_decode.h - Used to decode .jpg files for textures<br />
-- BMP.h - Used to decode .bmp files for textures<br />
-- rapidXML.h - Used to parse .xml files for importing tweak files.<br />
+Libraries used:
+- lodepng.h - Used to decode .png files for textures
+- jpeg_decode.h - Used to decode .jpg files for textures
+- BMP.h - Used to decode .bmp files for textures
+- rapidXML.h - Used to parse .xml files for importing tweak files.
 
-Importing over BOB example ([Using this basic LevelScript .bin file for example](https://drive.google.com/uc?export=download&id=0B0ipn7N-yey8VkJDWnZrWC14M2s)):<br />
+Preparing your ROM:
+- Use ApplyPPF3.exe to apply the obj_import195S ppf patch.
+- beh12-hack.bin & cmd17-hack.bin are both required to run the level
+- water-hack.bin is required for water boxes
+- LevelImporterPatches.xml tweak is used for minor improvements
+
+<code>sm64Import.exe -run "ApplyPPF3.exe a "C:/Users/David/Desktop/sm64.ext.z64" "obj_import195S.ppf"" -r "C:/Users/David/Desktop/sm64.ext.z64" -a 0x101B84 -ib "hacks/beh12-hack.bin" -a 0x1202000 -ib "hacks/cmd17-hack.bin" -a 0x1203000 -ib "hacks/water-hack.bin" -it "tweaks/LevelImporterPatches.xml"</code>
+
+Importing over BOB example ([Using this basic LevelScript.bin file](https://drive.google.com/uc?export=download&id=0B0ipn7N-yey8VkJDWnZrWC14M2s)):<br />
 <code>sm64Import.exe -df t 0x4000 0x4000 0xBFFF 0xBFFF -8000 -r "sm64.ext.z64" -a 0x2AC0F8 -ih "00 10 00 19 01 8E 00 00 01 8E 20 00 19 00 00 1C" -a 0x18E1800 0x19001800 -c 0x1500 -ib "LevelScript.bin" -a 0x18F0000 0x0E000000 -c 0x150000 -s 500 -io "Import.obj" "" -a 0x18E1700 0x19001700 -c 0x100 -ig "Import.obj" 1 -put "Import.obj" col 0x18E014C</code>
 
 Arguments:
