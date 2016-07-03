@@ -14,9 +14,10 @@ Preparing your ROM:
 - water-hack.bin is required for water boxes
 - LevelImporterPatches.xml tweak is used for minor improvements
 
-<code>sm64Import.exe -run "ApplyPPF3.exe a "C:/Users/David/Desktop/sm64.ext.z64" "obj_import195S.ppf"" -r "C:/Users/David/Desktop/sm64.ext.z64" -a 0x101B84 -ib "hacks/beh12-hack.bin" -a 0x1202000 -ib "hacks/cmd17-hack.bin" -a 0x1203000 -ib "hacks/water-hack.bin" -it "tweaks/LevelImporterPatches.xml"</code>
+<code>sm64Import.exe -run "hacks/tools/ApplyPPF3.exe a "sm64.ext.z64" "obj_import195S.ppf"" -r "sm64.ext.z64" -a 0x101B84 -ib "hacks/beh12-hack.bin" -a 0x1202000 -ib "hacks/cmd17-hack.bin" -a 0x1203000 -ib "hacks/water-hack.bin" -it "tweaks/LevelImporterPatches.xml"</code>
 
-Importing over BOB example ([Using this basic LevelScript.bin file](https://drive.google.com/uc?export=download&id=0B0ipn7N-yey8VkJDWnZrWC14M2s)):<br />
+Importing over BOB example ([Using this basic LevelScript.bin file](https://drive.google.com/uc?export=download&id=0B0ipn7N-yey8VkJDWnZrWC14M2s)):
+<br />
 <code>sm64Import.exe -df t 0x4000 0x4000 0xBFFF 0xBFFF -8000 -r "sm64.ext.z64" -a 0x2AC0F8 -ih "00 10 00 19 01 8E 00 00 01 8E 20 00 19 00 00 1C" -a 0x18E1800 0x19001800 -c 0x1500 -ib "LevelScript.bin" -a 0x18F0000 0x0E000000 -c 0x150000 -s 500 -io "Import.obj" "" -a 0x18E1700 0x19001700 -c 0x100 -ig "Import.obj" 1 -put "Import.obj" col 0x18E014C</code>
 
 Arguments:
