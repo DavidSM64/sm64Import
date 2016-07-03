@@ -10,7 +10,7 @@ Libraries used:
 
 Preparing your ROM:
 - Use ApplyPPF3.exe to apply the obj_import195S ppf patch.
-- beh12-hack.bin & cmd17-hack.bin are both required to run the level
+- beh12-hack.bin & cmd17-hack.bin are both required to get a custom level to work
 - water-hack.bin is required for water boxes
 - LevelImporterPatches.xml tweak is used for minor improvements
 
