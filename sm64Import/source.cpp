@@ -251,6 +251,7 @@ bool createTransDL = false;
 bool definedSegPtr = false;
 MaterialType lastTextureType = NOT_DEFINED;
 string geoModeData = "", colorTexData = "", texTypeData = "";
+string * currentPreName = NULL;
 
 /* Tool Variables */
 string romPath;
@@ -281,6 +282,18 @@ s16 dfx1 = 0x4000, dfz1 = 0x4000, dfx2 = 0xBFFF, dfz2 = 0xBFFF, dfy = -8000;
 vector<waterBox> waterBoxes;
 
 void importOBJCollision(const char*, const char*, bool);
+
+// Debug thing
+void printHexBytes(u8 * arr, int size) {
+	for (int i = 0; i < size; i++) printf("%02X ", arr[i]);
+	printf("\n");
+}
+
+// Debug thing
+void printHexShorts(u16 * arr, int size) {
+	for (int i = 0; i < size; i++) printf("%04X ", arr[i]);
+	printf("\n");
+}
 
 u8 bytesPerType(TextureType type) {
 	switch (type) {
@@ -453,14 +466,13 @@ void checkGeoModeInfo(material& m) {
 }
 
 void checkTextureTypeInfo(material& m) {
-	m.geoMode = 0;
 	vector<string> gma = splitString(texTypeData, ",");
 	for (string gme : gma) {
 		vector<string> gmd = splitString(gme, ":");
 		//printf("Comparing %s vs %s\n", m.name.c_str(), gmd[0].c_str());
 		if (m.name.compare(gmd[0]) == 0) {
 			gmd[1] = tolowercase(gmd[1]);
-			printf("Set Texture type for '%s', value = %s\n", m.name.c_str(), gmd[1].c_str());
+			//printf("Set Texture type for '%s', value = %s\n", m.name.c_str(), gmd[1].c_str());
 			if (gmd[1].compare("rgba16") == 0) 
 				m.texType = TEX_RGBA16;
 			else if (gmd[1].compare("rgba32") == 0)
@@ -509,7 +521,7 @@ void checkColorTexInfo(material& m) {
 			else
 				m.color = stoll(gmd[1].c_str());
 			m.enableTextureColor = true;
-			printf("Set texture color for '%s', value = 0x%X\n", m.name.c_str(), m.color);
+			//printf("Set texture color for '%s', value = 0x%X\n", m.name.c_str(), m.color);
 			if (gmd.size() > 2) 
 				m.texColDark = stof(gmd[2].c_str());
 			return;
@@ -518,15 +530,15 @@ void checkColorTexInfo(material& m) {
 }
 
 bool checkForTextureCopy(material * mat, vector<u8>& cur) {
+	//printf("Checking copies for material '%s'\n", mat->name.c_str());
 	if (textureBank.size() == 0) return false;
 	for (textureEntry& entry : textureBank) {
 		if (entry.data.size() != cur.size()) continue;
-		
 		bool pass = false;
 		for (int i = 0; i < entry.data.size(); ++i) {
 			if (entry.data[i] != cur[i]) { 
 				pass = false;
-				break; 
+				break;
 			}
 			pass = true;
 		}
@@ -594,7 +606,7 @@ int decodeImage(vector<u8>& data, u32& width, u32& height, bool& noAlpha, bool& 
 		}
 		else {
 			err.id = 501;
-			err.message = "Could not find extension for image file: ";
+			err.message = "Invalid extension for image file: ";
 			err.message.append(filename.c_str());
 		}
 	}
@@ -623,11 +635,6 @@ int processRGBA16Image(const char* filename, material * mat) {
 	bool noAlpha = false;
 	decodeImage(data, width, height, noAlpha, mat->cameFromBMP, filename);
 	if (noAlpha) insertAlphaIntoRGB(data);
-
-
-	FILE* tst = fopen(string(filename).append(".imgbin").c_str(), "wb");
-	fwrite((u8*)&data[0], 1, width*height * 4, tst);
-	fclose(tst);
 
 	//printf("Texture '%s': w=%d, h=%d, size = 0x%X\n",filename,width,height,data.size());
 	mat->texWidth = width;
@@ -699,7 +706,7 @@ int processRGBA32Image(const char* filename, material * mat) {
 	mat->texWidth = width;
 	mat->texHeight = height;
 	vector<u8> tex = vector<u8>(data.size());
-	printf("RGBA32 Texture '%s': w=%d, h=%d, size = 0x%X\n",filename,width,height, data.size());
+	//printf("RGBA32 Texture '%s': w=%d, h=%d, size = 0x%X\n",filename,width,height, data.size());
 
 	mat->type = TEXTURE_SOLID;
 
@@ -721,9 +728,9 @@ int processRGBA32Image(const char* filename, material * mat) {
 
 			bool shouldFlip = flipTexturesVertically;
 			if (mat->cameFromBMP) shouldFlip = !shouldFlip;
-			int pos = (y*width + x) * 2;
+			int pos = (y*width + x) * 4;
 			if (shouldFlip)
-				pos = ((height - 1 - y)*width + x) * 2;
+				pos = ((height - 1 - y)*width + x) * 4;
 
 			tex[pos] = r;
 			tex[pos + 1] = g;
@@ -759,6 +766,7 @@ int processIntensityImage(const char* filename, material * mat, u8 bits) {
 	mat->texWidth = width;
 	mat->texHeight = height;
 	vector<u8> tex = vector<u8>((int)(data.size() / 4.0 * (bits/8.0)));
+	//printf("I%d Texture '%s': w=%d, h=%d, size = 0x%X\n", bits, filename, width, height, tex.size());
 
 	mat->type = TEXTURE_SOLID;
 
@@ -784,9 +792,9 @@ int processIntensityImage(const char* filename, material * mat, u8 bits) {
 
 			bool shouldFlip = flipTexturesVertically;
 			if (mat->cameFromBMP) shouldFlip = !shouldFlip;
-			int pos = (y*width + x) * 2;
+			int pos = (y*width + x);
 			if (shouldFlip)
-				pos = ((height - 1 - y)*width + x) * 2;
+				pos = ((height - 1 - y)*width + x);
 
 			if (bits == 4) { // I4
 				int npos = pos / 2;
@@ -801,7 +809,7 @@ int processIntensityImage(const char* filename, material * mat, u8 bits) {
 
 		}
 	}
-	printf("Checking for copy! \n");
+	
 	if (!checkForTextureCopy(mat, tex)) {
 		textureEntry entry;
 		entry.offset = lastOffset;
@@ -812,7 +820,7 @@ int processIntensityImage(const char* filename, material * mat, u8 bits) {
 		textureBank.push_back(entry);
 		mat->texture = textureBank.size() - 1;
 	}
-
+	
 	mat->hasTexture = true;
 	return tex.size();
 }
@@ -829,7 +837,7 @@ int processIntensityAlphaImage(const char* filename, material * mat, u8 bits) {
 	mat->texWidth = width;
 	mat->texHeight = height;
 	vector<u8> tex = vector<u8>((int)(data.size() / 4.0 * (bits / 8.0)));
-	//printf("I%d Texture '%s': w=%d, h=%d, size = 0x%X\n", bits, filename, width, height, tex.size());
+	//printf("IA%d Texture '%s': w=%d, h=%d, size = 0x%X\n", bits, filename, width, height, tex.size());
 
 	mat->type = TEXTURE_SOLID;
 
@@ -865,9 +873,9 @@ int processIntensityAlphaImage(const char* filename, material * mat, u8 bits) {
 
 			bool shouldFlip = flipTexturesVertically;
 			if (mat->cameFromBMP) shouldFlip = !shouldFlip;
-			int pos = (y*width + x) * 2;
+			int pos = (y*width + x);
 			if (shouldFlip)
-				pos = ((height - 1 - y)*width + x) * 2;
+				pos = ((height - 1 - y)*width + x);
 
 			if (bits == 4) { // IA4
 				int npos = pos / 2;
@@ -1044,18 +1052,6 @@ void processNormal(string str) {
 	//cout << "Normal: " << hex << (s16)n.a << "//" << (s16)n.b << "//" << (s16)n.c << endl;
 }
 
-// Debug thing
-void printHexBytes(u8 * arr, int size){
-	for (int i = 0; i < size; i++) printf("%02X ", arr[i]);
-	printf("\n");
-}
-
-// Debug thing
-void printHexShorts(u16 * arr, int size) {
-	for (int i = 0; i < size; i++) printf("%04X ", arr[i]);
-	printf("\n");
-}
-
 void processFaces() {
 	for (face& f : faces) {
 		
@@ -1226,7 +1222,7 @@ void removeDuplicateVertices(u8 level) {
 		}
 		//printf("vertStart = 0x%X\n", mp.vertStart);
 	}
-	printf("Removed %d duplicate vertices. Saved 0x%X bytes of data.\n", dupCnt, dupCnt * 0x10);
+	//printf("Removed %d duplicate vertices. Saved 0x%X bytes of data.\n", dupCnt, dupCnt * 0x10);
 }
 
 void makeVertexGroups() {
@@ -1518,6 +1514,7 @@ void addCmdF5(vector<f3d>& cmds, material& mat, bool first) {
 				lineScale = bpt / 4.0;
 			else
 				lineScale = 0.125f;
+			if (mat.texType == TEX_RGBA32) lineScale /= 2;
 			u16 line = (u16)(mat.texWidth * lineScale) & 0x1FF;
 			//printf("line size = 0x%X\n", line);
 			u32 upper = ((type << 16) | (line << 8)) & 0x00FFFFFF;
@@ -1621,6 +1618,7 @@ void fillColorData(u8* colorData, material& mt, float darkMult) {
 void importOBJ(const char* objPath, const char* col_data) {
 	printf("Importing '%s'\n", objPath);
 
+	if (currentPreName != NULL) addObjPtr((char*)currentPreName->c_str());
 	addObjPtr((char*)objPath);
 
 	string line;
@@ -1639,6 +1637,7 @@ void importOBJ(const char* objPath, const char* col_data) {
 
 	if (curSegOffset % 16 != 0) curSegOffset += 16 - (curSegOffset % 16); // DEBUG (Add padding)
 
+	if (currentPreName != NULL) addPtr((char*)currentPreName->c_str(), PTR_START, (curSeg << 24) | curSegOffset);
 	addPtr((char*)objPath, PTR_START, (curSeg << 24) | curSegOffset);
 	int importStart = romPos + curSegOffset;
 	printf("importStart: 0x%X\n", importStart);
@@ -1648,7 +1647,7 @@ void importOBJ(const char* objPath, const char* col_data) {
 		if (!mt.isTextureCopy) curSegOffset += mt.size;
 		if (mt.enableTextureColor) {
 			mt.texColOffset = curSegOffset;
-			printf("Texture '%s' Color: 0x%X\n", mt.name.c_str(), mt.color);
+			//printf("Texture '%s' Color: 0x%X\n", mt.name.c_str(), mt.color);
 			curSegOffset += 0x10;
 		}
 	}
@@ -1668,6 +1667,7 @@ void importOBJ(const char* objPath, const char* col_data) {
 	vector<f3d> transCmds; // For textures/colors that have transparency in them. (Layer 5)
 
 	printf("F3D solid starts at 0x%X\n", curSegOffset);
+	if (currentPreName != NULL) addPtr((char*)currentPreName->c_str(), PTR_SOLID, (curSeg << 24) | curSegOffset);
 	addPtr((char*)objPath, PTR_SOLID, (curSeg << 24) | curSegOffset);
 	solidCmds.push_back(strF3D("E7 00 00 00 00 00 00 00"));
 	solidCmds.push_back(strF3D("B7 00 00 00 00 00 00 00"));
@@ -1680,6 +1680,7 @@ void importOBJ(const char* objPath, const char* col_data) {
 		if (mp.mat->hasTextureAlpha || mp.mat->hasTransparency) continue;
 		if (mp.mat->enableGeoMode) {
 			solidCmds.push_back(strF3D("B6 00 00 00 FF FF FF FF"));
+			//printf("geoMode for '%s':0x%X\n", mp.mat->name.c_str(), mp.mat->geoMode);
 			char cmd[24];
 			sprintf(cmd, "B7 00 00 00 %X %X %X %X",
 				(mp.mat->geoMode >> 24) & 0xFF,
@@ -1741,6 +1742,7 @@ void importOBJ(const char* objPath, const char* col_data) {
 
 	if (createAlphaDL) {
 		printf("F3D alpha starts at 0x%X\n", curSegOffset);
+		if (currentPreName != NULL) addPtr((char*)currentPreName->c_str(), PTR_ALPHA, (curSeg << 24) | curSegOffset);
 		addPtr((char*)objPath, PTR_ALPHA, (curSeg << 24) | curSegOffset);
 		alphaCmds.push_back(strF3D("E7 00 00 00 00 00 00 00"));
 		if (enableFog) alphaCmds.push_back(strF3D("B9 00 02 01 00 00 00 00"));
@@ -1802,12 +1804,17 @@ void importOBJ(const char* objPath, const char* col_data) {
 		bool resetBF = false;
 		material * lastMat = NULL;
 		printf("F3D transparency starts at 0x%X\n", curSegOffset);
+		if (currentPreName != NULL) addPtr((char*)currentPreName->c_str(), PTR_TRANS, (curSeg << 24) | curSegOffset);
 		addPtr((char*)objPath, PTR_TRANS, (curSeg << 24) | curSegOffset);
 		transCmds.push_back(strF3D("E7 00 00 00 00 00 00 00"));
 		transCmds.push_back(strF3D("B7 00 00 00 00 00 00 00"));
 		transCmds.push_back(strF3D("BB 00 00 01 FF FF FF FF"));
 		transCmds.push_back(strF3D("E8 00 00 00 00 00 00 00"));
 		transCmds.push_back(strF3D("E6 00 00 00 00 00 00 00"));
+
+		//transCmds.push_back(strF3D("EF 00 2C 30 00 50 42 41"));
+
+
 		for (int i = 0; i < matPos.size(); ++i) {
 			materialPosition mp = matPos.at(i);
 			if (mp.mat->hasTextureAlpha || !mp.mat->hasTransparency) continue;
@@ -1817,7 +1824,7 @@ void importOBJ(const char* objPath, const char* col_data) {
 				if (mp.mat->type == TEXTURE_TRANSPARENT) {
 					if (mp.mat->opacityOrg < 0xFF) {
 						char cmd[24];
-						sprintf(cmd, "FB 00 00 00 FF FF FF %X", mp.mat->opacity);
+						sprintf(cmd, "FB 00 00 00 FF FF FF %X", mp.mat->opacityOrg);
 						transCmds.push_back(strF3D(cmd));
 						resetBF = true;
 					}
@@ -1865,6 +1872,7 @@ void importOBJ(const char* objPath, const char* col_data) {
 			lastMat = mp.mat;
 		}
 		if (resetBF) transCmds.push_back(strF3D("FB 00 00 00 FF FF FF FF"));
+
 		transCmds.push_back(strF3D("FC FF FF FF FF FE 79 3C"));
 		transCmds.push_back(strF3D("BB 00 00 00 FF FF FF FF"));
 		transCmds.push_back(strF3D("B8 00 00 00 00 00 00 00"));
@@ -1873,7 +1881,6 @@ void importOBJ(const char* objPath, const char* col_data) {
 	}
 
 	int size = curSegOffset - (importStart-romPos);
-	//printf("Total Size = 0x%X\n", size);
 
 	u8 * importData = (u8*)malloc(size);
 	memcpy(importData, defaultColor, 0x10);
@@ -1939,7 +1946,10 @@ void importOBJ(const char* objPath, const char* col_data) {
 	}
 	if(col_data != NULL && err.id == 0) importOBJCollision(objPath, col_data, true);
 
+	printf("Total Size = 0x%X\n", curSegOffset - (importStart - romPos));
+
 	resetVariables();
+	currentPreName = NULL;
 }
 
 void importOBJCollision(const char* objPath, const char* col_data, bool continued) {
@@ -2073,7 +2083,10 @@ void importOBJCollision(const char* objPath, const char* col_data, bool continue
 
 	collision.push_back(0x0042);
 	curSegOffset += 4;
+
+	if(currentPreName != NULL) addPtr((char*)currentPreName->c_str(), PTR_COL, (curSeg << 24) | collisionStart);
 	addPtr((char*)objPath, PTR_COL, (curSeg << 24) | collisionStart);
+
 	//printHexShorts((u16*)&collision[0], collision.size());
 	printf("Collision starts at 0x%X\n", collisionStart);
 
@@ -2088,6 +2101,8 @@ void importOBJCollision(const char* objPath, const char* col_data, bool continue
 		err.id = 100;
 		err.message = "Import data limit has been exceeded!";
 	}
+
+	currentPreName = NULL;
 }
 
 void write16(u8* arr, u32 offset, u16 value){
@@ -2213,6 +2228,7 @@ void importWaterBoxData(int offset) {
 }
 
 void importGeoLayout(const char* objPathName, bool forLevel) {
+	if (currentPreName != NULL) addObjPtr((char*)currentPreName->c_str());
 	objPtrs* curPtr = NULL;
 	for (objPtrs op : ptrs) {
 		if (op.name.compare(objPathName) == 0) {
@@ -2239,6 +2255,17 @@ void importGeoLayout(const char* objPathName, bool forLevel) {
 			cmds.push_back(strGeo("04 00 00 00"));
 			cmds.push_back(strGeo("0F 00 00 01 00 00 07 D0 17 70 0C 00 00 00 EE 00 80 28 7D 30"));
 			cmds.push_back(strGeo("04 00 00 00"));
+			if (waterBoxes.size() > 0) {
+				bool hw = 0, ht = 0, hm = 0;
+				for (waterBox wb : waterBoxes) {
+					if (wb.type == 0) hw = 1;
+					else if (wb.type == 1) ht = 1;
+					else if (wb.type == 2) hm = 1;
+				}
+				if (hw) cmds.push_back(strGeo("18 00 50 00 80 2D 10 4C"));
+				if (ht) cmds.push_back(strGeo("18 00 50 01 80 2D 10 4C"));
+				if (hm) cmds.push_back(strGeo("18 00 50 02 80 2D 10 4C"));
+			}
 			if (curPtr->solid_ptr) {
 				char cmd[24];
 				sprintf(cmd, "15 01 00 00 %X %X %X %X",
@@ -2269,17 +2296,6 @@ void importGeoLayout(const char* objPathName, bool forLevel) {
 			}
 			cmds.push_back(strGeo("17 00 00 00"));
 			cmds.push_back(strGeo("18 00 00 00 80 27 61 D0"));
-			if (waterBoxes.size() > 0) {
-				bool hw = 0, ht = 0, hm = 0;
-				for (waterBox wb : waterBoxes) {
-					if (wb.type == 0) hw = 1;
-					else if (wb.type == 1) ht = 1;
-					else if (wb.type == 2) hm = 1;
-				}
-				if (hw) cmds.push_back(strGeo("18 00 50 00 80 2D 10 4C"));
-				if (ht) cmds.push_back(strGeo("18 00 50 01 80 2D 10 4C"));
-				if (hm) cmds.push_back(strGeo("18 00 50 02 80 2D 10 4C"));
-			}
 			cmds.push_back(strGeo("05 00 00 00"));
 			cmds.push_back(strGeo("05 00 00 00"));
 			cmds.push_back(strGeo("05 00 00 00"));
@@ -2325,6 +2341,7 @@ void importGeoLayout(const char* objPathName, bool forLevel) {
 		for(geoCmd gc: cmds) curSegOffset += gc.len;
 		//printf("objPathName(GEO): %s\n", objPathName);
 		addPtr((char*)objPathName, PTR_GEO, curSeg << 24 | geoStart);
+		if (currentPreName != NULL) addPtr((char*)currentPreName->c_str(), PTR_GEO, curSeg << 24 | geoStart);
 		int size = curSegOffset - geoStart;
 		u8 * importData = (u8*)malloc(size);
 		int segOff = 0;
@@ -2344,9 +2361,14 @@ void importGeoLayout(const char* objPathName, bool forLevel) {
 
 		free(importData);
 	}
+	currentPreName = NULL;
 }
 
 void importBin(const char* binPath, int offset, int setSize) {
+	if (currentPreName != NULL) {
+		addObjPtr((char*)currentPreName->c_str());
+		addPtr((char*)currentPreName->c_str(), PTR_START, (curSeg << 24) | curSegOffset);
+	}
 	FILE* bf = fopen(binPath, "rb");
 	int size;
 	if (setSize > -1) size = setSize;
@@ -2368,6 +2390,7 @@ void importBin(const char* binPath, int offset, int setSize) {
 	curImp->curPos += size;
 	fclose(bf);
 	//printf("Imported %s\n", binPath);
+	currentPreName = NULL;
 }
 
 void processTweakData(char* data) {
@@ -2419,6 +2442,10 @@ void importTweak (string path) {
 }
 
 void importHexData(char* hexString) {
+	if (currentPreName != NULL) {
+		addObjPtr((char*)currentPreName->c_str());
+		addPtr((char*)currentPreName->c_str(), PTR_START, (curSeg << 24) | curSegOffset);
+	}
 	int size = (strlen(hexString)+1)/3;
 	u8 * hexData = (u8*)malloc(size);
 	//printf("Number of hex bytes: %X\n", size);
@@ -2440,6 +2467,7 @@ void importHexData(char* hexString) {
 	memcpy(curImp->data+curImp->curPos, hexData, size);
 	curImp->curPos += size;
 	free(hexData);
+	currentPreName = NULL;
 }
 
 void setLightAndDarkValues(u32 light, u32 dark) {
@@ -2480,7 +2508,6 @@ void parseShortValue(string& input, s16& value) {
 }
 
 void importDataIntoRom() {
-	//return;
 	try {
 		FILE* ROM = fopen(romPath.c_str(), "rb+");
 		for (import& i : importData) {
@@ -2516,7 +2543,7 @@ void importDataIntoRom() {
 }
 
 int main(int argc, char *argv[]) {
-
+	string preName;
 	vector<vector<string>> arguments;
 	for (int i = 1; i < argc;) {
 		char * data[256];
@@ -2630,7 +2657,11 @@ int main(int argc, char *argv[]) {
 					importOBJ(arg[1].c_str(), NULL);
 				}
 				else if (arg.size() > 2) {
-					importOBJ(arg[1].c_str(), arg[2].c_str());
+					if (arg.size() > 3) currentPreName = &arg[3];
+					if (tolowercase(arg[2]).compare("null") == 0)
+						importOBJ(arg[1].c_str(), NULL);
+					else
+						importOBJ(arg[1].c_str(), arg[2].c_str());
 				}
 			}
 			else {
@@ -2644,8 +2675,10 @@ int main(int argc, char *argv[]) {
 				err.message = "You have not defined a rom position yet!";
 				continue;
 			}
-			if (arg.size() > 2)
+			if (arg.size() > 2) {
+				if (arg.size() > 3) currentPreName = &arg[3];
 				importOBJCollision(arg[1].c_str(), arg[2].c_str(), false);
+			}
 		}
 		else if (cmd.compare("-ig") == 0) {
 			if (romPos == 0xFFFFFFFF) {
@@ -2654,35 +2687,28 @@ int main(int argc, char *argv[]) {
 				continue;
 			}
 			if (arg.size() > 2) {
+				if (arg.size() > 3) currentPreName = &arg[3];
 				//printf("Adding geo layout! Args: %s, %s\n", arg[1].c_str(), arg[2].c_str());
 				importGeoLayout(arg[1].c_str(), stoi(arg[2].c_str()) > 0 ? true : false);
 			}
 		}
 		else if (cmd.compare("-ih") == 0) {
-			if (romPath.empty()) {
-				err.id = 2;
-				err.message = "You have not defined a path to the ROM file yet!";
-				continue;
-			}
-			else if (romPos == 0xFFFFFFFF) {
+			if (romPos == 0xFFFFFFFF) {
 				err.id = 3;
 				err.message = "You have not defined a rom position yet!";
 				continue;
 			}
-			if (arg.size() > 1)
+			if (arg.size() > 1) {
+				if (arg.size() > 2) currentPreName = &arg[2];
 				importHexData((char*)trim(arg[1]).c_str());
+			}
 		}
 		else if (cmd.compare("-it") == 0) {
 			if (arg.size() > 1)
 				importTweak(arg[1]);
 		}
 		else if (cmd.compare("-ib") == 0) {
-			if (romPath.empty()) {
-				err.id = 2;
-				err.message = "You have not defined a path to the ROM file yet!";
-				continue;
-			}
-			else if (romPos == 0xFFFFFFFF) {
+			if (romPos == 0xFFFFFFFF) {
 				err.id = 3;
 				err.message = "You have not defined a rom position yet!";
 				continue;
@@ -2693,6 +2719,7 @@ int main(int argc, char *argv[]) {
 				if (arg.size() > 3) {
 					parseIntValue(arg[2], off);
 					parseIntValue(arg[3], size);
+					if (arg.size() > 4) currentPreName = &arg[4];
 				}
 				importBin(arg[1].c_str(), off, size);
 			}
@@ -2756,6 +2783,10 @@ int main(int argc, char *argv[]) {
 		else if (cmd.compare("-wd") == 0) {
 			importWaterBoxData(0x400);
 		}
+		else if (cmd.compare("-n") == 0 && arg.size() > 1) {
+			preName = arg[1];
+			currentPreName = &preName;
+		}
 		else if (cmd.compare("-vft") == 0 && arg.size() > 1) {
 			arg[1] = tolowercase(arg[1]);
 			if (arg[1].compare("t") == 0 || arg[1].compare("1") == 0 || arg[1].compare("true") == 0)
@@ -2791,6 +2822,13 @@ int main(int argc, char *argv[]) {
 				}
 			}
 			parseIntValue(arg[3], (int&)put.address);
+
+			if (arg.size() > 4) { // Add offset
+				int add = 0;
+				parseIntValue(arg[4], add);
+				put.address += add;
+			}
+
 			putImports.push_back(put);
 		}
 		else if (cmd.compare("-fog") == 0 && arg.size() > 1) {
@@ -2839,6 +2877,11 @@ int main(int argc, char *argv[]) {
 			}
 		}
 
+	}
+
+	if (romPath.empty()) {
+		err.id = 2;
+		err.message = "You have not defined a path to the ROM!";
 	}
 
 	if (err.id)
