@@ -42,7 +42,7 @@ Arguments:
  - <code>-sv LIGHT_VALUE DARK_VALUE</code> Set shading value for levels.
  - <code>-sgm DATA</code> Sets the geometry mode for a particular material. Example: <code>-sgm "TextureName:0x00040000"</code>
  - <code>-tt DATA {EXTRA}</code> Allows you to define the type of texture a material is, default type is rgba16. Example: <code>-tt "TextureName:rgba32"</code>. The currently supported texture types are: RGBA16, RGBA32, I4, I8, IA4, IA8, and IA16. You can make I4 & I8 textures have an alpha mask by setting the optional {EXTRA} parameter to be "a" like this: <code>-tt "i4_tex:i8:a"</code>
- - <code>-put NAME SEG_DATA ROM_ADDRESS</code> Puts the segmented pointer of SEG_Data into the ROM. Useful for updating pointers in your levelscript automatically. SEG_DATA can be (Names are not case-sensative): START, SOLID, ALPHA, TRANS, GEO, or COL
+ - <code>-put NAME SEG_DATA ROM_ADDRESS {ADD_OFFSET}</code> Puts the segmented pointer of SEG_Data into the ROM. Useful for updating pointers in your levelscript automatically. SEG_DATA can be (Names are not case-sensative): START, SOLID, ALPHA, TRANS, GEO, or COL
  - <code>-vft BOOLEAN</code> Flip all textures vertically if true.
  - <code>-wb BOX_TYPE_ID X1_POS Z1_POS X2_POS Z2_POS HEIGHT</code> Creates a water box in the level. Used with -io* & -ioc. *Water box data is grouped with collision data, so you have to define <COL_DATA> if your just using -io.
  - <code>-wbc</code> Clears the water box list.
