@@ -8,7 +8,7 @@ Libraries used:
 - BMP.h - Used to decode .bmp files for textures
 - rapidXML.h - Used to parse .xml files for importing tweak files.
 
-Preparing your ROM:
+Preparing your ROM with SM64 Editor patches:
 - Use ApplyPPF3.exe to apply the obj_import195S ppf patch.
 - beh12-hack.bin & cmd17-hack.bin are both required to get a custom level to work
 - water-hack.bin is required for water boxes
@@ -26,12 +26,13 @@ Arguments:
  - <code>-center BOOLEAN</code> Centers the follwing obj model(s) if true.
  - <code>-ct DATA</code> Allows you to add color to textures. DATA = <code>"Name:Color:DarkScale"</code>. DarkScale is a float multiplier from the original color value that is used for lighting, so 0.8 would be 80% as bright as the set color.<br /> Example: <code>-ct "TextureName:0xFF0000FF:0.8"</code>
  - <code>-df BOOLEAN X1_POS Z1_POS X2_POS Z2_POS Y_POS</code> Creates a death floor for the level.
- - <code>-ib BIN_PATH {OFFSET SIZE}</code> Import binary file into the ROM. Optional parameters for importing only a specific section of the file into the ROM.  Example: <code>-ib "A_Binary_File.bin" 0x1000 0x10</code>
- - <code>-ig OBJ_NAME GEO_TYPE</code> Creates a geo layout from data from a previous -io cmd. GEOTYPE = 0 for objects & GEOTYPE = 1 for levels.
- - <code>-ih HEX_STRING</code> Import raw hex from a string into the ROM. Example: <code>-ih "FF 00 00 FF FF 00 00 FF"</code>
- - <code>-io OBJ_PATH {COL_DATA}</code> Import .obj file as f3d level data (Textures, colors, verticies, and f3d scripts). If you define the optional second parameter, {COL_DATA}, then collision data will be generated for the OBJ.
- - <code>-ioc OBJ_PATH COL_DATA</code> Import .obj file as collision data. COL_DATA is for defining each material with a collision type. Note: You don't have to define every material with COL_DATA, the default value is set to 0 (enviorment default) for each material.
+ - <code>-ib BIN_PATH {OFFSET SIZE} {NAME}</code> Import binary file into the ROM. Optional parameters for importing only a specific section of the file into the ROM. The optional NAME parameter is used with the -put cmd.  Example: <code>-ib "A_Binary_File.bin" 0x1000 0x10</code>
+ - <code>-ig OBJ_NAME GEO_TYPE {NAME}</code> Creates a geo layout from data from a previous -io cmd. GEOTYPE = 0 for objects & GEOTYPE = 1 for levels.
+ - <code>-ih HEX_STRING {NAME}</code> Import raw hex from a string into the ROM. Example: <code>-ih "FF 00 00 FF FF 00 00 FF"</code>
+ - <code>-io OBJ_PATH {COL_DATA} {NAME}</code> Import .obj file as f3d level data (Textures, colors, verticies, and f3d scripts). If you define the optional second parameter, {COL_DATA}, then collision data will be generated for the OBJ.
+ - <code>-ioc OBJ_PATH COL_DATA {NAME}</code> Import .obj file as collision data. COL_DATA is for defining each material with a collision type. Note: You don't have to define every material with COL_DATA, the default value is set to 0 (enviorment default) for each material.
  - <code>-it XML_PATH</code> Imports a tweak file into the ROM.
+ - <code>-n NAME</code> Sets the name for the next import. The name is used for the -put cmd.
  - <code>-o OFFSET_X OFFSET_Y OFFSET_Z</code> Set offset model/collision data.
  - <code>-option OPTION VALUE</code> Changes an importer value. Currently the only option to change is the vertex reduction level. Example: <code>-option rvl 2</code> will set the vertex reduction level to 2.
  - <code>-fog ENABLED {FOG_TYPE RED_VALUE GREEN_VALUE BLUE_VALUE}</code> Enables/Disables fog in the current level.
@@ -46,3 +47,5 @@ Arguments:
  - <code>-wb BOX_TYPE_ID X1_POS Z1_POS X2_POS Z2_POS HEIGHT</code> Creates a water box in the level. Used with -io* & -ioc. *Water box data is grouped with collision data, so you have to define <COL_DATA> if your just using -io.
  - <code>-wbc</code> Clears the water box list.
  - <code>-wd</code> Imports water data for the current level. Note: You MUST import this at the segmented address 0x19001800 with the current patches.
+
+MIT License. Copyright 2015 Davideesk.
