@@ -14,6 +14,8 @@ Improve water boxes.
 #include <iomanip>
 #include <algorithm>
 #include <string>
+#include <cmath>
+#include <cstring>
 #include <sstream>
 #include <vector>
 #include <cstdio>
