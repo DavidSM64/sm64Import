@@ -1,5 +1,5 @@
 /*
-sm64Import v0.1 by Davideesk
+sm64Import v0.1.1 by Davideesk
 
 Todo list in the future:
 Fix reduce vertices level 2 bug.
@@ -7,21 +7,68 @@ Support CI textures.
 Improve water boxes.
 */
 
-#include "lodepng.h"
-#include "jpeg_decoder.h"
-#include "BMP.h"
 #include "rapidxml.hpp"
+#include "BMP.h"
 #include <fstream>
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
 #include <string>
 #include <sstream>
-#include <stdio.h>
+#include <vector>
+#include <cstdio>
 #include <intrin.h>
 using namespace std;
-using namespace lodepng;
 using namespace rapidxml;
+
+// clang and gcc >= 4.4.3
+#if (defined(__GNUC__ ) && (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 3)))
+#define BYTE_SWAP_16(x) __builtin_bswap16(x)
+#define BYTE_SWAP_32(x) __builtin_bswap32(x)
+#elif (defined(__clang__))
+#define BYTE_SWAP_16(x) __builtin_bswap16(x)
+#define BYTE_SWAP_32(x) __builtin_bswap32(x)
+#elif defined(_MSC_VER)
+#include <cstdlib>
+#define BYTE_SWAP_16(x) _byteswap_ushort(x)
+#define BYTE_SWAP_32(x) _byteswap_ulong(x)
+#else
+#error Not clang, gcc, or MSC_VER
+#endif
+
+// from: http://stackoverflow.com/questions/6089231
+istream& safeGetline(istream& is, string& t)
+{
+	t.clear();
+
+	// The characters in the stream are read one-by-one using a std::streambuf.
+	// That is faster than reading them one-by-one using the std::istream.
+	// Code that uses streambuf this way must be guarded by a sentry object.
+	// The sentry object performs various tasks,
+	// such as thread synchronization and updating the stream state.
+
+	istream::sentry se(is, true);
+	streambuf* sb = is.rdbuf();
+
+	for (;;) {
+		int c = sb->sbumpc();
+		switch (c) {
+		case '\n':
+			return is;
+		case '\r':
+			if (sb->sgetc() == '\n')
+				sb->sbumpc();
+			return is;
+		case EOF:
+			// Also handle the case when the last line has no line ending
+			if (t.empty())
+				is.setstate(ios::eofbit);
+			return is;
+		default:
+			t += (char)c;
+		}
+	}
+}
 
 #ifndef MAX
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
@@ -255,11 +302,13 @@ string * currentPreName = NULL;
 
 /* Tool Variables */
 string romPath;
-string collisionString;
+string collisionString; 
+string curObjPath = "";
 u32 romPos = 0xFFFFFFFF;
 u8 curSeg = 0;
 u32 startSegOffset = 0;
 u32 curSegOffset = 0;
+bool verbose = false;
 bool flipTexturesVertically = false;
 bool centerVerts = false;
 /*
@@ -282,6 +331,13 @@ s16 dfx1 = 0x4000, dfz1 = 0x4000, dfx2 = 0xBFFF, dfz2 = 0xBFFF, dfy = -8000;
 vector<waterBox> waterBoxes;
 
 void importOBJCollision(const char*, const char*, bool);
+
+bool checkLittleEndian()
+{
+	unsigned int x = 1;
+	char *c = (char*)&x;
+	return (int)*c;
+}
 
 // Debug thing
 void printHexBytes(u8 * arr, int size) {
@@ -459,7 +515,7 @@ void checkGeoModeInfo(material& m) {
 			else
 				m.geoMode = stoll(gmd[1]);
 			m.enableGeoMode = true;
-			//printf("Set geomtry mode for '%s', value = 0x%X\n", m.name.c_str(), m.geoMode);
+			if (verbose) printf("Set geomtry mode for '%s', value = 0x%X\n", m.name.c_str(), m.geoMode);
 			return;
 		}
 	}
@@ -521,9 +577,9 @@ void checkColorTexInfo(material& m) {
 			else
 				m.color = stoll(gmd[1].c_str());
 			m.enableTextureColor = true;
-			//printf("Set texture color for '%s', value = 0x%X\n", m.name.c_str(), m.color);
+			if (verbose) printf("Set texture color for '%s', value = 0x%X\n", m.name.c_str(), m.color);
 			if (gmd.size() > 2) 
-				m.texColDark = stof(gmd[2].c_str());
+				m.texColDark = stod(gmd[2].c_str());
 			return;
 		}
 	}
@@ -533,9 +589,10 @@ bool checkForTextureCopy(material * mat, vector<u8>& cur) {
 	//printf("Checking copies for material '%s'\n", mat->name.c_str());
 	if (textureBank.size() == 0) return false;
 	for (textureEntry& entry : textureBank) {
-		if (entry.data.size() != cur.size()) continue;
 		bool pass = false;
+		if (entry.data.size() != cur.size()) continue;
 		for (int i = 0; i < entry.data.size(); ++i) {
+			if (entry.data.size() != cur.size()) break;
 			if (entry.data[i] != cur[i]) { 
 				pass = false;
 				break;
@@ -555,62 +612,24 @@ bool checkForTextureCopy(material * mat, vector<u8>& cur) {
 	return false;
 }
 
-int decodeImage(vector<u8>& data, u32& width, u32& height, bool& noAlpha, bool& isBMP, string filename) {
+int decodeImage(vector<u8>& data, u32& width, u32& height, string filename) {
 	if (filename.rfind('.') != string::npos) {
-		string ext = filename.substr(filename.rfind('.') + 1);
-		//printf("File extension = %s\n", ext.c_str());
-		ext = tolowercase(ext.c_str());
+		if (verbose)printf("decoding image: '%s'\n", filename.c_str());
+		string arg = "nconvert.exe -quiet -overwrite -o \"sm64ImportTemp.bmp\" -out bmp -32bits ";
+		arg.append(string(curObjPath).append(filename));
+		system(arg.c_str()); // call nconvert.exe
+		BMP img = BMP("sm64ImportTemp.bmp");
+		if (img.error) {
+			err.id = 504;
+			err.message = "Image error: ";
+			err.message.append(img.errorMsg);
+		}
+		data = img.GetPixels();
+		width = img.GetWidth();
+		height = img.GetHeight();
 
-		if(ext.compare("png") == 0) {
-			u32 error = decode(data, width, height, filename);
-			if (error) {
-				err.id = 502;
-				err.message = "lodepng error: ";
-				err.message.append(lodepng_error_text(error));
-				return 1;
-			}
-		}
-		else if (ext.compare("jpg") == 0 || ext.compare("jpeg") == 0 || ext.compare("jpe") == 0 || ext.compare("jfif") == 0) {
-			noAlpha = true;
-			FILE *f = fopen(filename.c_str(), "rb");
-			fseek(f, 0, SEEK_END);
-			int size = ftell(f); 
-			u8* buf = (u8*)malloc(size);
-			fseek(f, 0, SEEK_SET);
-			size_t read = fread(buf, 1, size, f);
-			fclose(f);
-			Jpeg::Decoder decoder(buf, size);
-			if (decoder.GetResult() != Jpeg::Decoder::OK)
-			{
-				err.id = 503;
-				err.message = "jpeg_decoder error";
-				return 1;
-			}
-			width = decoder.GetWidth();
-			height = decoder.GetHeight();
-			data.insert(data.end(), &decoder.GetImage()[0], &decoder.GetImage()[width*height*3]);
-			free(buf);
-		}
-		else if (ext.compare("bmp") == 0) {
-			BMP img = BMP(filename.c_str());
-			if (img.error) {
-				err.id = 504;
-				err.message = "bmp error: ";
-				err.message.append(img.errorMsg);
-			}
-			data = img.GetPixels();
-			width = img.GetWidth();
-			height = img.GetHeight();
-			if(img.GetBPP() == 24) noAlpha = true;
-			isBMP = true;
-		}
-		else {
-			err.id = 501;
-			err.message = "Invalid extension for image file: ";
-			err.message.append(filename.c_str());
-		}
-	}
-	else {
+		remove("sm64ImportTemp.bmp"); // delete file
+	} else {
 		err.id = 500;
 		err.message = "Could not find extension for image file: ";
 		err.message.append(filename.c_str());
@@ -619,24 +638,13 @@ int decodeImage(vector<u8>& data, u32& width, u32& height, bool& noAlpha, bool& 
 	return 0;
 }
 
-void insertAlphaIntoRGB(vector<u8>& data) {
-	for (int i = 0; i < data.size(); i++) {
-		if (i % 4 == 3) {
-			data.insert(data.begin() + i, 0xFF);
-		}
-	}
-	data.push_back(0xFF);
-}
-
 int processRGBA16Image(const char* filename, material * mat) {
 	vector<u8> data;
 	u32 width, height;
 	
-	bool noAlpha = false;
-	decodeImage(data, width, height, noAlpha, mat->cameFromBMP, filename);
-	if (noAlpha) insertAlphaIntoRGB(data);
+	decodeImage(data, width, height, filename);
 
-	//printf("Texture '%s': w=%d, h=%d, size = 0x%X\n",filename,width,height,data.size());
+	if (verbose) printf("RGBA16 Texture '%s': w=%d, h=%d, size = 0x%X\n",filename,width,height,data.size());
 	mat->texWidth = width;
 	mat->texHeight = height;
 	vector<u8> tex = vector<u8>(data.size() / 2);
@@ -698,15 +706,12 @@ int processRGBA32Image(const char* filename, material * mat) {
 	vector<u8> data;
 	u32 width, height;
 
-	u32 error = decode(data, width, height, filename);
-	if (error) {
-		cout << "decoder error " << error << ": " << lodepng_error_text(error) << endl;
-		return 0;
-	}
+	decodeImage(data, width, height, filename);
+
 	mat->texWidth = width;
 	mat->texHeight = height;
 	vector<u8> tex = vector<u8>(data.size());
-	//printf("RGBA32 Texture '%s': w=%d, h=%d, size = 0x%X\n",filename,width,height, data.size());
+	if (verbose) printf("RGBA32 Texture '%s': w=%d, h=%d, size = 0x%X\n",filename,width,height, data.size());
 
 	mat->type = TEXTURE_SOLID;
 
@@ -758,15 +763,12 @@ int processIntensityImage(const char* filename, material * mat, u8 bits) {
 	vector<u8> data;
 	u32 width, height;
 
-	u32 error = decode(data, width, height, filename);
-	if (error) {
-		cout << "decoder error " << error << ": " << lodepng_error_text(error) << endl;
-		return 0;
-	}
+	decodeImage(data, width, height, filename);
+
 	mat->texWidth = width;
 	mat->texHeight = height;
 	vector<u8> tex = vector<u8>((int)(data.size() / 4.0 * (bits/8.0)));
-	//printf("I%d Texture '%s': w=%d, h=%d, size = 0x%X\n", bits, filename, width, height, tex.size());
+	if (verbose) printf("I%d Texture '%s': w=%d, h=%d, size = 0x%X\n", bits, filename, width, height, tex.size());
 
 	mat->type = TEXTURE_SOLID;
 
@@ -829,15 +831,12 @@ int processIntensityAlphaImage(const char* filename, material * mat, u8 bits) {
 	vector<u8> data;
 	u32 width, height;
 
-	u32 error = decode(data, width, height, filename);
-	if (error) {
-		cout << "decoder error " << error << ": " << lodepng_error_text(error) << endl;
-		return 0;
-	}
+	decodeImage(data, width, height, filename);
+
 	mat->texWidth = width;
 	mat->texHeight = height;
 	vector<u8> tex = vector<u8>((int)(data.size() / 4.0 * (bits / 8.0)));
-	//printf("IA%d Texture '%s': w=%d, h=%d, size = 0x%X\n", bits, filename, width, height, tex.size());
+	if (verbose) printf("IA%d Texture '%s': w=%d, h=%d, size = 0x%X\n", bits, filename, width, height, tex.size());
 
 	mat->type = TEXTURE_SOLID;
 
@@ -935,13 +934,12 @@ void processMaterialColorAlpha(float alpha, material * mat) {
 }
 
 void processMaterialLib(string str) {
+	lastOffset = curSegOffset;
 	string line;
 	ifstream infile;
 	infile.open(str);
 	int size = 0;
-	while (!infile.eof()) {
-		getline(infile, line);
-		//cout << line << endl;
+	while (safeGetline(infile, line)) {
 		if (line.find("newmtl ") == 0) {
 			material m;
 			m.type = COLOR_SOLID;
@@ -977,13 +975,11 @@ void processMaterialLib(string str) {
 			if(!materials.at(materials.size() - 1).enableTextureColor)
 				processMaterialColor(line.substr(3).c_str(), &materials.at(materials.size() - 1));
 		}else if (line.find("d ") == 0) {
-			materials.at(materials.size() - 1).opacity = stof(line.substr(2).c_str()) * 0xFF;
+			materials.at(materials.size() - 1).opacity = stod(line.substr(2).c_str()) * 0xFF;
 			materials.at(materials.size() - 1).opacityOrg = materials.at(materials.size() - 1).opacity;
-			processMaterialColorAlpha(stof(line.substr(2).c_str()), &materials.at(materials.size() - 1));
+			processMaterialColorAlpha(stod(line.substr(2).c_str()), &materials.at(materials.size() - 1));
 		}
 		else if (line.find("map_Kd ") == 0) {
-			//cout << "Found image: " << line << endl;
-			//printf("Texture Type: 0x%X\n", size);
 			checkTextureTypeInfo(materials.at(materials.size() - 1));
 			switch (materials.at(materials.size() - 1).texType) {
 				case TEX_RGBA16:
@@ -1013,6 +1009,7 @@ void processMaterialLib(string str) {
 	if (!materials.at(materials.size() - 1).isTextureCopy) {
 		(&materials.at(materials.size() - 1))->offset = lastOffset;
 		(&materials.at(materials.size() - 1))->size = size;
+		if (verbose) printf("New texture '%s', size = 0x%X\n", materials.at(materials.size() - 1).name.c_str(), materials.at(materials.size() - 1).size);
 	}if (materials.at(materials.size() - 1).enableTextureColor) {
 		lastOffset += 0x10;
 	}
@@ -1022,10 +1019,9 @@ void processMaterialLib(string str) {
 void processVertex(string str) {
 	vector<string> splitXYZ = splitString(str, " ");
 	vertex v;
-	v.x = (stof(splitXYZ[0]) * modelScale) + xOff;
-	v.y = (stof(splitXYZ[1]) * modelScale) + yOff;
-	v.z = (stof(splitXYZ[2]) * modelScale) + zOff;
-	//printf("Vertex: %04X,%04X,%04X\n", v.x, v.y, v.z);
+	v.x = (stod(splitXYZ[0]) * modelScale) + xOff;
+	v.y = (stod(splitXYZ[1]) * modelScale) + yOff;
+	v.z = (stod(splitXYZ[2]) * modelScale) + zOff;
 	verts.push_back(v);
 }
 
@@ -1033,10 +1029,8 @@ void processUV(string str) {
 	string u = str.substr(0, str.find(' '));
 	string v = str.substr(u.length() + 1);
 	texCord uv;
-	//printf("UV: %04X, %04X\n", uv.u, uv.v);
-	//printf("%s\n", str.c_str());
-	uv.u = stof(u) * 32 * 32;
-	uv.v = -(stof(v) * 32 * 32);
+	uv.u = stod(u) * 32 * 32;
+	uv.v = -(stod(v) * 32 * 32);
 	uvs.push_back(uv);
 }
 
@@ -1049,7 +1043,6 @@ void processNormal(string str) {
 	n.c = stod(splitXYZ[2]) * 0x7F;
 	n.d = 0xFF;
 	norms.push_back(n);
-	//cout << "Normal: " << hex << (s16)n.a << "//" << (s16)n.b << "//" << (s16)n.c << endl;
 }
 
 void processFaces() {
@@ -1071,9 +1064,6 @@ void processFaces() {
 		normal nc = norms[stoi(splitSubA[2]) - 1];
 
 		finalVertex fa, fb, fc;
-		//fa.shouldSkip = false;
-		//fb.shouldSkip = false;
-		//fc.shouldSkip = false;
 
 		// Modify UV cordinates based on material.
 		ta.u = ta.u * (float)(f.mat->texWidth / 32.0) - 0x10;
@@ -1220,9 +1210,8 @@ void removeDuplicateVertices(u8 level) {
 				if (moveVertsBack(mp.fvg[g], mp.fvg[g + 1])) g--;
 			}
 		}
-		//printf("vertStart = 0x%X\n", mp.vertStart);
 	}
-	//printf("Removed %d duplicate vertices. Saved 0x%X bytes of data.\n", dupCnt, dupCnt * 0x10);
+	if (verbose) printf("Removed %d duplicate vertices. Saved 0x%X bytes of data.\n", dupCnt, dupCnt * 0x10);
 }
 
 void makeVertexGroups() {
@@ -1270,13 +1259,11 @@ void makeVertexGroups() {
 
 void addMaterialPosition(string str) {
 	for (auto &m : materials) {
-		//printf("comparing %s vs %s\n", m.name.c_str(), str.c_str());
 		if (strcmp(m.name.c_str(), str.c_str()) == 0) {
-			//printf("Adding positions! %d & %d\n", lastPos, currentFace);
+			if (verbose) printf("Adding positions! %d & %d\n", lastPos, currentFace);
 			materialPosition mp;
 			mp.position = currentFace;
 			mp.mat = &m;
-			//mp.fvg = NULL;
 			currentMaterial = &m;
 			mp.cLen = 0;
 			matPos.push_back(mp);
@@ -1287,8 +1274,8 @@ void addMaterialPosition(string str) {
 }
 void processLine(string str) {
 	if (str.find("mtllib ") == 0) {
-		//cout << "Found material lib: " << str << endl;
-		processMaterialLib(str.substr(7));
+		if (verbose) cout << "Found material lib: " << str << endl;
+		processMaterialLib(string(curObjPath).append(str.substr(7)));
 	} else if (str.find("usemtl ") == 0) {
 		addMaterialPosition(str.substr(7));
 	} else if (str.find("v ") == 0) {
@@ -1398,31 +1385,28 @@ void addFogEnd(vector<f3d>& cmds) {
 
 void addCmd03(vector<f3d>& cmds, material& mat, u32 addOffset) {
 	if (mat.type == COLOR_SOLID) {
-		u32 off = startSegOffset + addOffset + mat.offset + 0x10;
+		u32 off = startSegOffset + mat.offset + 0x10;
 		char cmd[24];
-		sprintf(cmd, "03 86 00 00 %X %X %X %X", curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
+		sprintf(cmd, "03 86 00 10 %X %X %X %X", curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
 		cmds.push_back(strF3D(cmd));
-		//printHexBytes(strF3D(cmd).data, 8);
-		off = startSegOffset + addOffset + mat.offset + 0x18;
-		sprintf(cmd, "03 88 00 00 %X %X %X %X", curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
+		off = startSegOffset + mat.offset + 0x18;
+		sprintf(cmd, "03 88 00 10 %X %X %X %X", curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
 		cmds.push_back(strF3D(cmd));
-		//printHexBytes(strF3D(cmd).data, 8);
 	}
 	else {
 		u32 off = startSegOffset;
 		if (mat.enableTextureColor) 
 			off = startSegOffset + addOffset + mat.texColOffset;
-		//printf("CMD 03: (%s) texColOffset = 0x%X\n", mat.name.c_str(), mat.texColOffset);
+		if (verbose) printf("CMD 03: (%s) texColOffset = 0x%X\n", mat.name.c_str(), mat.texColOffset);
+		//printf("off (Color texture) = 0x%X\n", off);
 		char cmd[24];
-		sprintf(cmd, "03 86 00 00 %X %X %X %X", curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
+		sprintf(cmd, "03 86 00 10 %X %X %X %X", curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
 		cmds.push_back(strF3D(cmd));
-		//printHexBytes(strF3D(cmd).data, 8);
 		off = startSegOffset + 8;
 		if (mat.enableTextureColor)
 			off = startSegOffset + addOffset + mat.texColOffset + 0x8;
-		sprintf(cmd, "03 88 00 00 %X %X %X %X", curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
+		sprintf(cmd, "03 88 00 10 %X %X %X %X", curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
 		cmds.push_back(strF3D(cmd));
-		//printHexBytes(strF3D(cmd).data, 8);
 	}
 }
 
@@ -1436,7 +1420,6 @@ void addTriCmds(vector<f3d>& cmds, material& mat, fvGroup& grp, int offset) {
 
 	char cmd[24];
 	sprintf(cmd, "04 %X 00 %X %X %X %X %X", amount - 0x10 & 0xFF, amount & 0xFF, curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
-	//printf("%s\n", cmd);
 	cmds.push_back(strF3D(cmd));
 	for (int i = 0; i < grp.numTri; i++) {
 		char cmd[24];
@@ -1445,7 +1428,6 @@ void addTriCmds(vector<f3d>& cmds, material& mat, fvGroup& grp, int offset) {
 		u8 c = grp.indexList[i * 3 + 2] * 0xA;
 
 		sprintf(cmd, "BF 00 00 00 00 %X %X %X", a, b, c);
-		//printf("%s\n", cmd);
 		cmds.push_back(strF3D(cmd));
 	}
 }
@@ -1461,7 +1443,7 @@ void addCmdF2(vector<f3d>& cmds, material& mat) {
 
 void addCmdF3(vector<f3d>& cmds, material& mat) {
 	u32 numTexels = ((mat.texWidth * mat.texHeight + getTexelIncrement(mat.texType)) >> getTexelShift(mat.texType)) - 1;
-	//printf("F3: %d,%d,%d,%d numTexels = 0x%X \n", mat.texWidth, mat.texHeight, getTexelIncrement(mat.texType), getTexelShift(mat.texType), numTexels);
+	if (verbose) printf("F3: %d,%d,%d,%d numTexels = 0x%X \n", mat.texWidth, mat.texHeight, getTexelIncrement(mat.texType), getTexelShift(mat.texType), numTexels);
 	int bpt = bytesPerType(mat.texType);
 	u32 tl;
 	if(bpt)
@@ -1516,7 +1498,6 @@ void addCmdF5(vector<f3d>& cmds, material& mat, bool first) {
 				lineScale = 0.125f;
 			if (mat.texType == TEX_RGBA32) lineScale /= 2;
 			u16 line = (u16)(mat.texWidth * lineScale) & 0x1FF;
-			//printf("line size = 0x%X\n", line);
 			u32 upper = ((type << 16) | (line << 8)) & 0x00FFFFFF;
 			u8 maskS = (u8)ceil(log2(mat.texWidth)) & 0xF;
 			u8 maskT = (u8)ceil(log2(mat.texHeight)) & 0xF;
@@ -1524,7 +1505,7 @@ void addCmdF5(vector<f3d>& cmds, material& mat, bool first) {
 			sprintf(cmd, "F5 %X %X %X 00 %X %X %X", 
 			(upper >> 16) & 0xFF, (upper >> 8) & 0xFF, upper & 0xFF,
 			(lower >> 16) & 0xFF, (lower >> 8) & 0xFF, lower & 0xFF);
-			//printf("F5 CMD: %s\n", cmd);
+			if (verbose) printf("F5 CMD: %s\n", cmd);
 			cmds.push_back(strF3D(cmd));
 		}
 	}
@@ -1596,7 +1577,7 @@ void fillColorData(u8* colorData, material& mt, float darkMult) {
 	if (dg > 0xFF) dg = 0xFF;
 	if (db > 0xFF) db = 0xFF;
 	a = mt.color & 0xFF;
-	//printf("Color: r=0x%X g=0x%X b=0x%X a=0x%X\n",r,g,b,a);
+	if (verbose) printf("Color: r=0x%X g=0x%X b=0x%X a=0x%X\n",lr,lg,lb,a);
 	colorData[0] = lr;
 	colorData[1] = lg;
 	colorData[2] = lb;
@@ -1621,11 +1602,17 @@ void importOBJ(const char* objPath, const char* col_data) {
 	if (currentPreName != NULL) addObjPtr((char*)currentPreName->c_str());
 	addObjPtr((char*)objPath);
 
+	string path = objPath;
+	int last = path.find_last_of('/');
+	if (last != string::npos)
+		curObjPath = path.substr(0, last+1);
+	else
+		curObjPath = "";
+
 	string line;
 	ifstream infile;
 	infile.open(objPath);
-	while (!infile.eof()) {
-		getline(infile, line);
+	while (safeGetline(infile, line)) {
 		processLine(line);
 	}
 	centerVertices();
@@ -1633,9 +1620,7 @@ void importOBJ(const char* objPath, const char* col_data) {
 	makeVertexGroups();
 	removeDuplicateVertices(reduceVertLevel);
 	infile.close();
-	//printf("Import Size: 0x%x\n", 0x10+getCombinedTextureSizes()+getCombinedVertSizes());
-
-	if (curSegOffset % 16 != 0) curSegOffset += 16 - (curSegOffset % 16); // DEBUG (Add padding)
+	if (curSegOffset % 8 != 0) curSegOffset += 8 - (curSegOffset % 8); // DEBUG (Add padding)
 
 	if (currentPreName != NULL) addPtr((char*)currentPreName->c_str(), PTR_START, (curSeg << 24) | curSegOffset);
 	addPtr((char*)objPath, PTR_START, (curSeg << 24) | curSegOffset);
@@ -1647,7 +1632,7 @@ void importOBJ(const char* objPath, const char* col_data) {
 		if (!mt.isTextureCopy) curSegOffset += mt.size;
 		if (mt.enableTextureColor) {
 			mt.texColOffset = curSegOffset;
-			//printf("Texture '%s' Color: 0x%X\n", mt.name.c_str(), mt.color);
+			if (verbose) printf("Texture '%s' Color: 0x%X\n", mt.name.c_str(), mt.color);
 			curSegOffset += 0x10;
 		}
 	}
@@ -1660,7 +1645,6 @@ void importOBJ(const char* objPath, const char* col_data) {
 		}
 	}
 
-	//printf("Number of tri: %X\n",((curSegOffset-startVerts)/0x10)/3);
 	// We need to seperate the model into at most 3 seperate DLs.
 	vector<f3d> solidCmds; // For textures/color with no transparency in them. (Layer 1)
 	vector<f3d> alphaCmds; // For textures that have atleast 1 alpha bit in them. (Layer 4)
@@ -1677,6 +1661,7 @@ void importOBJ(const char* objPath, const char* col_data) {
 	if (enableFog) addFogStart(solidCmds, false);
 	for (int i = 0; i < matPos.size(); ++i) {
 		materialPosition mp = matPos.at(i);
+		//printf("Material '%s'\n", mp.mat->name.c_str());
 		if (mp.mat->hasTextureAlpha || mp.mat->hasTransparency) continue;
 		if (mp.mat->enableGeoMode) {
 			solidCmds.push_back(strF3D("B6 00 00 00 FF FF FF FF"));
@@ -1690,6 +1675,17 @@ void importOBJ(const char* objPath, const char* col_data) {
 				);
 			solidCmds.push_back(strF3D(cmd));
 		}
+
+		if (mp.mat->hasTexture) {
+			addCmdFD(solidCmds, *mp.mat);
+			addCmdF5(solidCmds, *mp.mat, true);
+			solidCmds.push_back(strF3D("E6 00 00 00 00 00 00 00"));
+			addCmdF3(solidCmds, *mp.mat);
+			solidCmds.push_back(strF3D("E7 00 00 00 00 00 00 00"));
+			addCmdF5(solidCmds, *mp.mat, false);
+			addCmdF2(solidCmds, *mp.mat);
+		}
+
 		//printf("Current type: %d\n", mp.mat->type);
 		//printf("Comparing Types (SOLID) %d != %d\n", lastTextureType, mp.mat->type);
 		if (lastTextureType != mp.mat->type) {
@@ -1711,15 +1707,6 @@ void importOBJ(const char* objPath, const char* col_data) {
 				addCmd03(solidCmds, *mp.mat, importStart-romPos);
 			}
 		}
-		if (mp.mat->hasTexture) {
-			addCmdFD(solidCmds, *mp.mat);
-			addCmdF5(solidCmds, *mp.mat, true);
-			solidCmds.push_back(strF3D("E6 00 00 00 00 00 00 00"));
-			addCmdF3(solidCmds, *mp.mat);
-			solidCmds.push_back(strF3D("E7 00 00 00 00 00 00 00"));
-			addCmdF5(solidCmds, *mp.mat, false);
-			addCmdF2(solidCmds, *mp.mat);
-		}
 
 		//printf("Material '%s': %d, vertStart = %d\n", mp.mat->name.c_str(), mp.position, mp.vertStart);
 		int grpOff = 0;
@@ -1738,6 +1725,7 @@ void importOBJ(const char* objPath, const char* col_data) {
 	solidCmds.push_back(strF3D("BB 00 00 00 FF FF FF FF"));
 	solidCmds.push_back(strF3D("B8 00 00 00 00 00 00 00"));
 	//for (f3d cmd : solidCmds) printHexBytes(cmd.data, 8);
+
 	curSegOffset += solidCmds.size() * 8;
 
 	if (createAlphaDL) {
@@ -1886,7 +1874,7 @@ void importOBJ(const char* objPath, const char* col_data) {
 	memcpy(importData, defaultColor, 0x10);
 	int curOff = 0x10;
 	for (material mt : materials) {
-		//printf("material '%s' offset = 0x%x, size = 0x%x\n", mt.name.c_str(), mt.offset, mt.size);
+		if (verbose) printf("material '%s' offset = 0x%x, size = 0x%x\n", mt.name.c_str(), mt.offset, mt.size);
 		if (mt.hasTexture) {
 			if (!mt.isTextureCopy) {
 				memcpy(importData + curOff, (u8*)&textureBank.at(mt.texture).data[0], mt.size);
@@ -1907,6 +1895,7 @@ void importOBJ(const char* objPath, const char* col_data) {
 			curOff += 0x10;
 		}
 	}
+
 	for (materialPosition mp : matPos) {
 		//printf("material '%s'\n", mp.mat->name.c_str());
 		for (int g = 0; g < mp.numGroups; g++) {
@@ -1945,7 +1934,6 @@ void importOBJ(const char* objPath, const char* col_data) {
 		err.message = "Import data limit has been exceeded!";
 	}
 	if(col_data != NULL && err.id == 0) importOBJCollision(objPath, col_data, true);
-
 	printf("Total Size = 0x%X\n", curSegOffset - (importStart - romPos));
 
 	resetVariables();
@@ -1956,11 +1944,18 @@ void importOBJCollision(const char* objPath, const char* col_data, bool continue
 	if (!continued) {
 		addObjPtr((char*)objPath);
 		resetVariables();
+
+		string path = objPath;
+		int last = path.find_last_of('/');
+		if (last != string::npos)
+			curObjPath = path.substr(0, last + 1);
+		else
+			curObjPath = "";
+
 		string line;
 		ifstream infile;
 		infile.open(objPath);
-		while (!infile.eof()) {
-			getline(infile, line);
+		while (safeGetline(infile, line)) {
 			processLine(line);
 		}
 		centerVertices();
@@ -2090,8 +2085,9 @@ void importOBJCollision(const char* objPath, const char* col_data, bool continue
 	//printHexShorts((u16*)&collision[0], collision.size());
 	printf("Collision starts at 0x%X\n", collisionStart);
 
-	for (u16& col : collision) col = _byteswap_ushort(col);
-	//printf("Collision length = %X\n",collision.size()*2);
+	if(checkLittleEndian)
+		for (u16& col : collision) col = BYTE_SWAP_16(col);
+	if (verbose) printf("Collision length = %X\n",collision.size()*2);
 
 	if (curImp->curPos + collision.size()*2 <= curImp->limit) {
 		memcpy(curImp->data + curImp->curPos, (u8*)&collision[0], collision.size() * 2);
@@ -2251,7 +2247,7 @@ void importGeoLayout(const char* objPathName, bool forLevel) {
 			cmds.push_back(strGeo("05 00 00 00"));
 			cmds.push_back(strGeo("0C 01 00 00"));
 			cmds.push_back(strGeo("04 00 00 00"));
-			cmds.push_back(strGeo("0A 01 00 2D 00 64 96 96 80 29 AA 3C"));
+			cmds.push_back(strGeo("0A 01 00 2D 00 64 7F FF 80 29 AA 3C"));
 			cmds.push_back(strGeo("04 00 00 00"));
 			cmds.push_back(strGeo("0F 00 00 01 00 00 07 D0 17 70 0C 00 00 00 EE 00 80 28 7D 30"));
 			cmds.push_back(strGeo("04 00 00 00"));
@@ -2373,7 +2369,7 @@ void importBin(const char* binPath, int offset, int setSize) {
 	int size;
 	if (setSize > -1) size = setSize;
 	else {
-		fseek(bf, 0, SEEK_END);
+		fseek(bf, offset, SEEK_END);
 		size = ftell(bf);
 	}
 	fseek(bf, offset, SEEK_SET);
@@ -2448,7 +2444,7 @@ void importHexData(char* hexString) {
 	}
 	int size = (strlen(hexString)+1)/3;
 	u8 * hexData = (u8*)malloc(size);
-	//printf("Number of hex bytes: %X\n", size);
+	if (verbose) printf("Number of hex bytes: %X\n", size);
 	if (curImp->curPos + size > curImp->limit) {
 		err.id = 100;
 		err.message = "Import data limit has been exceeded!";
@@ -2491,11 +2487,11 @@ void setLightAndDarkValues(u32 light, u32 dark) {
 
 void parseIntValue(string& input, int& value) {
 	if (input.find("0x") == 0)
-		value = stoi(input.substr(2), 0, 16);
+		value = stoll(input.substr(2), 0, 16);
 	else if (input.find("$") == 0)
-		value = stoi(input.substr(1), 0, 16);
+		value = stoll(input.substr(1), 0, 16);
 	else
-		value = stoi(input);
+		value = stoll(input);
 }
 
 void parseShortValue(string& input, s16& value) {
@@ -2514,21 +2510,23 @@ void importDataIntoRom() {
 			//printHexBytes(i.data, i.curPos);
 			fseek(ROM, i.address, 0);
 			fwrite(i.data, 1, i.curPos, ROM);
-			free(i.data); // Free all data
+			free(i.data);
 		}
 		importData.clear();
 		for (putData put : putImports) {
 			fseek(ROM, put.address, 0);
-			u32 pd = _byteswap_ulong(put.data);
-			fwrite(&pd, 4, 1, ROM);
-			//printf("put 0x%X at ROM address 0x%X\n", put.data, put.address);
+			if (checkLittleEndian()) {
+				u32 pd = BYTE_SWAP_32(put.data);
+				fwrite(&pd, 4, 1, ROM);
+			} else 
+				fwrite(&put.data, 4, 1, ROM);
+			if (verbose) printf("put 0x%X at ROM address 0x%X\n", put.data, put.address);
 		}
 		putImports.clear();
-		//printf("tweaks.size() = %d\n", tweaks.size());
 		if (tweaks.size() > 0) {
-			//printf("Importing Tweaks into ROM!\n");
+			if (verbose) printf("Importing Tweaks into ROM!\n");
 			for (tweakPatch tp : tweaks){
-				//printf("Rom Address = 0x%X\n", tp.address);
+				if (verbose) printf("Rom Address = 0x%X\n", tp.address);
 				fseek(ROM, tp.address, 0);
 				fwrite((u8*)&tp.data[0], 1, tp.data.size(), ROM);
 			}
@@ -2564,7 +2562,6 @@ int main(int argc, char *argv[]) {
 	}
 
 	for (vector<string> arg : arguments) {
-		//printf("%s\n",arg[0].c_str());
 		if (err.id) break;
 		string cmd = tolowercase(arg[0]);
 		if (cmd.compare("-r") == 0 && arg.size() > 1) {
@@ -2574,8 +2571,8 @@ int main(int argc, char *argv[]) {
 				err.id = 10;
 				err.message = "Invalid ROM path";
 			}
-
-			//printf("Importing to ROM file: %s\n", romPath.c_str());
+			if (verbose)
+				printf("Importing to ROM file: %s\n", romPath.c_str());
 		}
 		else if (cmd.compare("-a") == 0) {
 			if (arg.size() > 1) {
@@ -2598,7 +2595,8 @@ int main(int argc, char *argv[]) {
 					err.message = "Segmented pointer not in hex format";
 				}
 				definedSegPtr = true;
-				//printf("Rom Position: %X, Segment: %X, Offset: %X\n", romPos, curSeg, curSegOffset);
+				if (verbose)
+					printf("Rom Position: %X, Segment: %X, Offset: %X\n", romPos, curSeg, curSegOffset);
 			}
 
 			import i;
@@ -2615,8 +2613,9 @@ int main(int argc, char *argv[]) {
 			curImp = &importData.at(importData.size() - 1);
 		}
 		else if (cmd.compare("-s") == 0 && arg.size() > 1) {
-			modelScale = stof(arg[1]);
-			//printf("Model scale size set to: %f\n", modelScale);
+			modelScale = stod(arg[1]);
+			if (verbose)
+				printf("Model scale size set to: %f\n", modelScale);
 		}
 		else if (cmd.compare("-o") == 0 && arg.size() > 3) {
 			parseShortValue(arg[1], xOff);
@@ -2639,11 +2638,13 @@ int main(int argc, char *argv[]) {
 			if (curImp != NULL) {
 				parseIntValue(arg[1], (int&)curImp->limit);
 				realloc((u8*)curImp->data, curImp->limit);
-				//printf("Data limit set to: 0x%X\n", curImp->limit);
+				if (verbose)
+					printf("Data limit set to: 0x%X\n", curImp->limit);
 			}
 			else {
 				parseIntValue(arg[1], (int&)setNextLimit);
-				//printf("Data limit set to: 0x%X\n", setNextLimit);
+				if (verbose)
+					printf("Data limit set to: 0x%X\n", setNextLimit);
 			}
 		}
 		else if (cmd.compare("-io") == 0 && arg.size() > 1) {
@@ -2688,7 +2689,8 @@ int main(int argc, char *argv[]) {
 			}
 			if (arg.size() > 2) {
 				if (arg.size() > 3) currentPreName = &arg[3];
-				//printf("Adding geo layout! Args: %s, %s\n", arg[1].c_str(), arg[2].c_str());
+				if (verbose)
+					printf("Adding geo layout! Args: %s, %s\n", arg[1].c_str(), arg[2].c_str());
 				importGeoLayout(arg[1].c_str(), stoi(arg[2].c_str()) > 0 ? true : false);
 			}
 		}
@@ -2744,7 +2746,8 @@ int main(int argc, char *argv[]) {
 			parseShortValue(arg[4], dfx2);
 			parseShortValue(arg[5], dfz2);
 			parseShortValue(arg[6], dfy);
-			//printf("Death floor %d %d %d %d %d %d\n", enableDeathFloor, dfx1, dfz1, dfx2, dfz2, dfy);
+			if (verbose)
+				printf("Death floor %d %d %d %d %d %d\n", enableDeathFloor, dfx1, dfz1, dfx2, dfz2, dfy);
 		}
 		else if (cmd.compare("-wbc") == 0) {
 			waterBoxes.clear();
@@ -2777,7 +2780,7 @@ int main(int argc, char *argv[]) {
 			wb.minz = minz;
 			wb.maxx = maxx;
 			wb.maxz = maxz;
-			//printf("Adding water box: %d %d %d %d\n", minx, minz, maxx, maxz);
+			printf("Adding water box: %d %d %d %d\n", minx, minz, maxx, maxz);
 			waterBoxes.push_back(wb);
 		}
 		else if (cmd.compare("-wd") == 0) {
@@ -2793,7 +2796,11 @@ int main(int argc, char *argv[]) {
 				flipTexturesVertically = true;
 			else if (arg[1].compare("f") == 0 || arg[1].compare("0") == 0 || arg[1].compare("false") == 0)
 				flipTexturesVertically = false;
-			//printf("Am I flipping the textures vertically? %s\n", flipTexturesVertically ? "Yes I am!" : "No I'm not");
+			if(verbose)
+				printf("Am I flipping the textures vertically? %s\n", flipTexturesVertically ? "Yes I am!" : "No I'm not");
+		}
+		else if (cmd.compare("-v") == 0) {
+			verbose = true;
 		}
 		else if (cmd.compare("-center") == 0 && arg.size() > 1) {
 			arg[1] = tolowercase(arg[1]);
@@ -2885,7 +2892,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	if (err.id)
-		printf("Error %d: %s\n", err.id, err.message);
+		printf("Error %d: %s\n", err.id, err.message.c_str());
 	else
 		importDataIntoRom();
 	
