@@ -3,8 +3,7 @@
 TARGET := sm64import
 
 SRC_FILES  := \
-	source.cpp \
-   lodepng.cpp
+	source.cpp
 
 OBJ_DIR     = ./obj
 
