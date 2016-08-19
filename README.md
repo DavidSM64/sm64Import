@@ -1,10 +1,12 @@
-# sm64Import v0.1
+# sm64Import v0.1.1
 
 This tool can be used to import .obj files, binary files, hex data, and tweaks into the Super Mario 64 ROM.
 
+Required Tools:
+nconvert.exe - Used to convert all different types of image files. This program needs to be in the same directory as sm64Import.exe.
+I can't legally include it in this project, but you can download it here: http://www.xnview.com/en/nconvert/
+
 Libraries used:
-- lodepng.h - Used to decode .png files for textures
-- jpeg_decode.h - Used to decode .jpg files for textures
 - BMP.h - Used to decode .bmp files for textures
 - rapidXML.h - Used to parse .xml files for importing tweak files.
 
