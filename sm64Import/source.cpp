@@ -236,7 +236,6 @@ typedef struct {
 	s16 maxx;
 	s16 maxz;
 	s16 y;
-	u32* pointer;
 } waterBox;
 
 typedef struct {
@@ -2135,7 +2134,6 @@ void importWaterBoxData(int offset) {
 			write16(importData, cur, BoxIndex);
 			u32 ind = 0x19001C00 + (BoxIndex * 0x20);
 			write32(importData, cur + 4, ind);
-			wb.pointer = (u32*)(0x1C00 + (BoxIndex * 0x20));
 			BoxIndex++;
 			cur += 8;
 		}
@@ -2155,7 +2153,6 @@ void importWaterBoxData(int offset) {
 			write16(importData, cur, ToxicIndex);
 			u32 ind = 0x19001C00 + (BoxIndex * 0x20);
 			write32(importData, cur + 4, ind);
-			wb.pointer = (u32*)(0x1C00 + (BoxIndex * 0x20));
 			BoxIndex++;
 			ToxicIndex++;
 			cur += 8;
@@ -2174,7 +2171,6 @@ void importWaterBoxData(int offset) {
 			write16(importData, cur, MistIndex);
 			u32 ind = 0x19001C00 + (BoxIndex * 0x20);
 			write32(importData, cur + 4, ind);
-			wb.pointer = (u32*)(0x1C00 + (BoxIndex * 0x20));
 			BoxIndex++;
 			MistIndex++;
 			cur += 8;
@@ -2766,7 +2762,6 @@ int main(int argc, char *argv[]) {
 			parseShortValue(arg[6], maxz);
 			parseShortValue(arg[7], wb.y);
 			parseShortValue(arg[8], (s16&)wb.scale);
-			wb.pointer = 0;
 			if (minx > maxx) {
 				int t = minx;
 				minx = maxx;
