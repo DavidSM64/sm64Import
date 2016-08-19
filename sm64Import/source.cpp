@@ -2638,7 +2638,7 @@ int main(int argc, char *argv[]) {
 		else if (cmd.compare("-c") == 0 && arg.size() > 1) {
 			if (curImp != NULL) {
 				parseIntValue(arg[1], (int&)curImp->limit);
-				realloc((u8*)curImp->data, curImp->limit);
+				curImp->data = (u8*)realloc((u8*)curImp->data, curImp->limit);
 				if (verbose)
 					printf("Data limit set to: 0x%X\n", curImp->limit);
 			}
