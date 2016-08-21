@@ -336,7 +336,7 @@ bool checkLittleEndian()
 {
 	unsigned int x = 1;
 	char *c = (char*)&x;
-	return (int)*c;
+	return ((int)*c != 0);
 }
 
 // Debug thing
@@ -644,7 +644,7 @@ int processRGBA16Image(const char* filename, material * mat) {
 	
 	decodeImage(data, width, height, filename);
 
-	if (verbose) printf("RGBA16 Texture '%s': w=%d, h=%d, size = 0x%X\n",filename,width,height,data.size());
+	if (verbose) printf("RGBA16 Texture '%s': w=%d, h=%d, size = 0x%llX\n",filename,width,height,data.size());
 	mat->texWidth = width;
 	mat->texHeight = height;
 	vector<u8> tex = vector<u8>(data.size() / 2);
@@ -768,7 +768,7 @@ int processIntensityImage(const char* filename, material * mat, u8 bits) {
 	mat->texWidth = width;
 	mat->texHeight = height;
 	vector<u8> tex = vector<u8>((int)(data.size() / 4.0 * (bits/8.0)));
-	if (verbose) printf("I%d Texture '%s': w=%d, h=%d, size = 0x%X\n", bits, filename, width, height, tex.size());
+	if (verbose) printf("I%d Texture '%s': w=%d, h=%d, size = 0x%llX\n", bits, filename, width, height, tex.size());
 
 	mat->type = TEXTURE_SOLID;
 
@@ -836,7 +836,7 @@ int processIntensityAlphaImage(const char* filename, material * mat, u8 bits) {
 	mat->texWidth = width;
 	mat->texHeight = height;
 	vector<u8> tex = vector<u8>((int)(data.size() / 4.0 * (bits / 8.0)));
-	if (verbose) printf("IA%d Texture '%s': w=%d, h=%d, size = 0x%X\n", bits, filename, width, height, tex.size());
+	if (verbose) printf("IA%d Texture '%s': w=%d, h=%d, size = 0x%llX\n", bits, filename, width, height, tex.size());
 
 	mat->type = TEXTURE_SOLID;
 
@@ -1419,7 +1419,7 @@ void addTriCmds(vector<f3d>& cmds, material& mat, fvGroup& grp, int offset) {
 	//printHexBytes((u8*)grp.indexList, grp.numTri * 3);
 
 	char cmd[24];
-	sprintf(cmd, "04 %X 00 %X %X %X %X %X", amount - 0x10 & 0xFF, amount & 0xFF, curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
+	sprintf(cmd, "04 %X 00 %X %X %X %X %X", (amount - 0x10) & 0xFF, amount & 0xFF, curSeg & 0xFF, (off >> 16) & 0xFF, (off >> 8) & 0xFF, off & 0xFF);
 	cmds.push_back(strF3D(cmd));
 	for (int i = 0; i < grp.numTri; i++) {
 		char cmd[24];
@@ -2085,9 +2085,9 @@ void importOBJCollision(const char* objPath, const char* col_data, bool continue
 	//printHexShorts((u16*)&collision[0], collision.size());
 	printf("Collision starts at 0x%X\n", collisionStart);
 
-	if(checkLittleEndian)
+	if(checkLittleEndian())
 		for (u16& col : collision) col = BYTE_SWAP_16(col);
-	if (verbose) printf("Collision length = %X\n",collision.size()*2);
+	if (verbose) printf("Collision length = %llX\n",collision.size()*2);
 
 	if (curImp->curPos + collision.size()*2 <= curImp->limit) {
 		memcpy(curImp->data + curImp->curPos, (u8*)&collision[0], collision.size() * 2);
@@ -2124,7 +2124,6 @@ void importWaterBoxData(int offset) {
 	u8 * importData = (u8*)malloc(offset + waterBoxes.size() * 0x20);
 
 	u32 BoxIndex = 0;
-	char cmd[256];
 	int cur = 0;
 	for (waterBox& wb: waterBoxes)
 	{
@@ -2387,8 +2386,6 @@ void importBin(const char* binPath, int offset, int setSize) {
 }
 
 void processTweakData(char* data) {
-	tweakPatch * curPat = NULL;
-	int pos = 0;
 	string pch = strtok(data, " ");
 	tweakPatch cur;
 	cur.address = stoll(pch.substr(0,pch.length()-1), 0, 16);
@@ -2541,7 +2538,6 @@ int main(int argc, char *argv[]) {
 	string preName;
 	vector<vector<string>> arguments;
 	for (int i = 1; i < argc;) {
-		char * data[256];
 		int cnt = 1;
 		vector<string> arg;
 		arg.push_back(argv[i]);
@@ -2549,7 +2545,6 @@ int main(int argc, char *argv[]) {
 			if (i + j >= argc) break;
 			if (argv[i + j][0] == '-') 
 				if(isalpha(argv[i + j][1])) break; // Won't break with negative numbers.
-			data[j] = argv[i + j];
 			arg.push_back(argv[i + j]);
 			cnt++;
 		}
